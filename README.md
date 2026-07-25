@@ -30,11 +30,11 @@ Smear / Collision / Splat / Droplet は今後の段階で追加予定。
 
 ## インストール
 
-`scripts/` フォルダを Maya の `PYTHONPATH` (もしくは `MAYA_SCRIPT_PATH`) に追加します。
+このリポジトリのルートを Maya の `PYTHONPATH` (もしくは `MAYA_SCRIPT_PATH`) に追加します。
 例 (`Maya.env` に追記):
 
 ```
-PYTHONPATH = <repo>/scripts
+PYTHONPATH = <repo>
 ```
 
 ## 使い方
