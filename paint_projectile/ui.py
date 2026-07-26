@@ -10,13 +10,16 @@ touching Python:
 
 from __future__ import annotations
 
+import math
 from typing import Optional
 
 from . import __version__ as _pkg_version
 from . import splat as _splat
 from . import system as _system
 
-_PREVIEW_GROUP = "paint_projectile_splat_PREVIEW_GRP"
+# QLabel widget used for the in-UI preview. Populated lazily on the
+# first Preview click so importing this module outside Maya still works.
+_PREVIEW_LABEL = None
 
 _GITHUB_OWNER = "ogshaw03"
 _GITHUB_REPO = "Stylized-Paint-Projectile-Tool"
@@ -137,6 +140,8 @@ def _on_generate(fields):
     splat_forward_bias = cmds.floatSliderGrp(fields["splatForwardBias"],
                                               q=True, v=True)
     splat_jitter = cmds.floatSliderGrp(fields["splatJitter"], q=True, v=True)
+    splat_thickness = cmds.floatSliderGrp(fields["splatThickness"],
+                                           q=True, v=True)
     squash_frames = int(cmds.intFieldGrp(fields["squashFrames"], q=True, v1=True))
 
     result = _system.create_projectile_system(
@@ -158,6 +163,7 @@ def _on_generate(fields):
         splat_min_squeeze=splat_squeeze,
         splat_rotation_jitter=splat_jitter,
         splat_forward_bias=splat_forward_bias,
+        splat_thickness=splat_thickness,
         impact_squash_frames=squash_frames,
     )
     cmds.select(result.controller, r=True)
@@ -258,36 +264,137 @@ def _run_update() -> None:
     cmds.evalDeferred(_reopen_after_update, lowestPriority=True)
 
 
-def _clear_splat_preview() -> None:
-    if cmds.objExists(_PREVIEW_GROUP):
-        cmds.delete(_PREVIEW_GROUP)
+_PREVIEW_SIZE = 260   # square px on-screen
+
+
+def _render_splash_pixmap(geom: dict, stretch_x: float, stretch_z: float,
+                          forward_offset: float, size: int = _PREVIEW_SIZE):
+    """Render the splash geometry to a QPixmap for in-UI display.
+
+    Bounds are auto-computed from the transformed geometry so the
+    splash always fills the preview area regardless of scale.
+    """
+    from PySide2 import QtCore, QtGui  # Maya 2023 ships with PySide2
+
+    def _tx(pt):
+        x, z = pt
+        return (x * stretch_x + forward_offset, z * stretch_z)
+
+    all_polys = [[_tx(p) for p in geom["blob"]]]
+    for ray in geom["rays"]:
+        all_polys.append([_tx(p) for p in ray])
+    for drop in geom["droplets"]:
+        all_polys.append([_tx(p) for p in drop])
+
+    all_pts = [pt for poly in all_polys for pt in poly]
+    all_pts.append((0.0, 0.0))   # ensure impact origin is in frame
+    xs = [p[0] for p in all_pts]
+    zs = [p[1] for p in all_pts]
+    minx, maxx = min(xs), max(xs)
+    minz, maxz = min(zs), max(zs)
+    span = max(maxx - minx, maxz - minz, 1e-3)
+    pad = span * 0.10
+    span_padded = span + 2.0 * pad
+    scale = (size - 20) / span_padded
+    cx = (minx + maxx) * 0.5
+    cz = (minz + maxz) * 0.5
+
+    def to_canvas(pt):
+        x = size * 0.5 + (pt[0] - cx) * scale
+        # invert z so +Z on the surface plane goes UP in the preview
+        y = size * 0.5 - (pt[1] - cz) * scale
+        return QtCore.QPointF(x, y)
+
+    pixmap = QtGui.QPixmap(size, size)
+    pixmap.fill(QtGui.QColor(38, 38, 42))
+    painter = QtGui.QPainter(pixmap)
+    painter.setRenderHint(QtGui.QPainter.Antialiasing, True)
+
+    # Faint origin cross-hair for reference.
+    painter.setPen(QtGui.QPen(QtGui.QColor(90, 90, 100), 1, QtCore.Qt.DotLine))
+    painter.drawLine(QtCore.QPointF(0, size * 0.5),
+                     QtCore.QPointF(size, size * 0.5))
+    painter.drawLine(QtCore.QPointF(size * 0.5, 0),
+                     QtCore.QPointF(size * 0.5, size))
+
+    painter.setPen(QtCore.Qt.NoPen)
+    painter.setBrush(QtGui.QColor(210, 60, 60))
+    for poly in all_polys:
+        qpath = QtGui.QPainterPath()
+        first = True
+        for pt in poly:
+            cp = to_canvas(pt)
+            if first:
+                qpath.moveTo(cp)
+                first = False
+            else:
+                qpath.lineTo(cp)
+        qpath.closeSubpath()
+        painter.drawPath(qpath)
+
+    # Impact point marker (world origin, before any forward_offset).
+    origin_canvas = to_canvas((0.0, 0.0))
+    painter.setBrush(QtGui.QColor(230, 220, 100))
+    painter.setPen(QtCore.Qt.NoPen)
+    painter.drawEllipse(origin_canvas, 4.0, 4.0)
+
+    # Tangent (+X = ball travel) arrow, projected into the preview.
+    painter.setPen(QtGui.QPen(QtGui.QColor(230, 220, 100), 2))
+    tip_world = ((maxx - minx) * 0.35, 0.0)
+    tip_canvas = to_canvas(tip_world)
+    painter.drawLine(origin_canvas, tip_canvas)
+    dx = tip_canvas.x() - origin_canvas.x()
+    dy = tip_canvas.y() - origin_canvas.y()
+    ang = math.atan2(dy, dx)
+    head_len = 8.0
+    for h_ang in (ang + math.pi * 0.85, ang - math.pi * 0.85):
+        hx = tip_canvas.x() + head_len * math.cos(h_ang)
+        hy = tip_canvas.y() + head_len * math.sin(h_ang)
+        painter.drawLine(tip_canvas, QtCore.QPointF(hx, hy))
+
+    # Legend text
+    painter.setPen(QtGui.QColor(200, 200, 210))
+    font = painter.font()
+    font.setPointSize(8)
+    painter.setFont(font)
+    painter.drawText(6, size - 6, "yellow = impact + travel direction (+X)")
+
+    painter.end()
+    return pixmap
+
+
+def _find_preview_qlabel():
+    """Locate the preview QLabel we anchored in show() via its
+    objectName. Returns None if the label isn't reachable (e.g., UI
+    was rebuilt but this module still has an old handle)."""
+    try:
+        from PySide2 import QtWidgets
+        from maya import OpenMayaUI
+        from shiboken2 import wrapInstance
+    except ImportError:
+        return None
+    ptr = OpenMayaUI.MQtUtil.findControl("paint_projectile_preview_anchor")
+    if not ptr:
+        return None
+    anchor = wrapInstance(int(ptr), QtWidgets.QWidget)
+    return anchor.findChild(QtWidgets.QLabel, "paint_projectile_preview_label")
 
 
 def _preview_splat(fields) -> None:
-    """Spawn a static splat at the world origin using the current SPLAT
-    slider values so the animator can dial in the look without running
-    a full GENERATE. Re-clicking replaces the previous preview.
-
-    Visualises the *fully-grazing* case (velocity purely tangential to
-    the surface) so every slider that biases toward the direction of
-    travel — Grazing Stretch, Grazing Squeeze, Forward Bias — has
-    maximum visible effect. Perpendicular hits will always be milder
-    than this preview."""
-    _clear_splat_preview()
+    """Render a preview of the current SPLAT settings into the QLabel
+    embedded in the tool window. No viewport nodes are created."""
+    label = _find_preview_qlabel()
+    if label is None:
+        cmds.warning("[paint_projectile] preview widget not found; "
+                     "close and reopen the tool window.")
+        return
 
     splat_scale = cmds.floatSliderGrp(fields["splatScale"], q=True, v=True)
-    splat_offset = cmds.floatSliderGrp(fields["splatOffset"], q=True, v=True)
     splat_stretch = cmds.floatSliderGrp(fields["splatStretch"], q=True, v=True)
     splat_squeeze = cmds.floatSliderGrp(fields["splatSqueeze"], q=True, v=True)
     splat_forward_bias = cmds.floatSliderGrp(fields["splatForwardBias"],
                                               q=True, v=True)
-    splat_jitter = cmds.floatSliderGrp(fields["splatJitter"], q=True, v=True)
 
-    templates = _parse_csv(cmds.textFieldButtonGrp(
-        fields["splatTemplates"], q=True, text=True))
-
-    # Use the picked projectile mesh (if any) to size the splat, so the
-    # preview reflects the actual final size. Fall back to unit radius.
     mesh = cmds.textFieldButtonGrp(fields["mesh"], q=True, text=True).strip()
     if mesh and cmds.objExists(mesh):
         try:
@@ -298,50 +405,71 @@ def _preview_splat(fields) -> None:
         projectile_radius = 1.0
     base_scale = projectile_radius * splat_scale
 
-    # Fully grazing synthetic hit: normal +Y, tangent +X, grazing = 1.
+    # Fully-grazing synthetic hit so every "grazing" slider shows max effect.
     forward_offset = (1.0 * splat_stretch * base_scale
                       * float(splat_forward_bias))
     shape_asymmetry = 1.0 * float(splat_forward_bias)
 
-    grp = cmds.group(em=True, n=_PREVIEW_GROUP)
-
-    splat_name = _splat.create_splats_from_candidates(
-        base_name="paint_projectile_splat_preview",
-        position=(0.0, 0.0, 0.0),
-        normal=(0.0, 1.0, 0.0),
-        template_candidates=templates,
-        parent=grp,
-        surface_offset=splat_offset,
-        spawn_frame=int(cmds.currentTime(q=True)),
-        grow_frames=1,
-        base_scale=base_scale,
-        stretch_along_tangent=splat_stretch,
-        stretch_perp_tangent=splat_squeeze,
-        tangent_direction=(1.0, 0.0, 0.0),
+    geom = _splat.compute_splash_geometry(
+        base_radius=base_scale,
+        asymmetry=shape_asymmetry,
+        seed=None,   # reroll shape variation on every click
+    )
+    pixmap = _render_splash_pixmap(
+        geom,
+        stretch_x=splat_stretch,
+        stretch_z=splat_squeeze,
         forward_offset=forward_offset,
-        shape_asymmetry=shape_asymmetry,
-        rotation_jitter_degrees=splat_jitter,
-        seed=None,   # random each preview so shape variation is visible
     )
+    label.setPixmap(pixmap)
 
-    # Strip the grow-in animation so the preview stays fully visible on
-    # any frame — the animator wants to inspect shape, not scrub time.
-    for attr in ("scaleX", "scaleY", "scaleZ", "visibility"):
-        try:
-            cmds.cutKey(splat_name, at=attr, clear=True)
-        except Exception:
-            pass
-    cmds.setAttr(f"{splat_name}.scaleX", splat_stretch * base_scale)
-    cmds.setAttr(f"{splat_name}.scaleY", base_scale)
-    cmds.setAttr(f"{splat_name}.scaleZ", splat_squeeze * base_scale)
-    cmds.setAttr(f"{splat_name}.visibility", 1)
 
-    cmds.select(splat_name, r=True)
-    cmds.inViewMessage(
-        amg=(f"Splat preview at origin ・ size ≈ "
-             f"<hl>{base_scale:.2f}</hl> ・ +X = ball travel direction"),
-        pos="topCenter", fade=True,
-    )
+def _clear_splat_preview() -> None:
+    label = _find_preview_qlabel()
+    if label is not None:
+        label.clear()
+        label.setText("(no preview)")
+
+
+def _install_preview_label_if_needed() -> None:
+    """First-click helper: inject a named QLabel inside the anchor cmds
+    control so subsequent ``_find_preview_qlabel`` calls can locate it.
+    Idempotent — re-runs harmless."""
+    try:
+        from PySide2 import QtCore, QtWidgets
+        from maya import OpenMayaUI
+        from shiboken2 import wrapInstance
+    except ImportError:
+        cmds.warning("[paint_projectile] PySide2 not available — "
+                     "preview unavailable in this Maya build.")
+        return
+    ptr = OpenMayaUI.MQtUtil.findControl("paint_projectile_preview_anchor")
+    if not ptr:
+        return
+    anchor = wrapInstance(int(ptr), QtWidgets.QWidget)
+    existing = anchor.findChild(QtWidgets.QLabel,
+                                "paint_projectile_preview_label")
+    if existing is not None:
+        return
+    # cmds.text has a QLabel already; we don't replace it — we add a
+    # sibling QLabel and hide the anchor text so the pixmap owns the
+    # space. Simpler: just wrap the anchor's own QLabel-like widget
+    # and set its objectName so _find_preview_qlabel can grab it.
+    label = QtWidgets.QLabel(anchor)
+    label.setObjectName("paint_projectile_preview_label")
+    label.setAlignment(QtCore.Qt.AlignCenter)
+    label.setFixedSize(_PREVIEW_SIZE, _PREVIEW_SIZE)
+    layout = anchor.layout()
+    if layout is None:
+        layout = QtWidgets.QVBoxLayout(anchor)
+        layout.setContentsMargins(0, 0, 0, 0)
+    layout.addWidget(label, alignment=QtCore.Qt.AlignCenter)
+    # Hide the placeholder text label(s) that cmds.text put in the
+    # anchor so they don't sit above the pixmap.
+    for child in anchor.findChildren(QtWidgets.QLabel):
+        if child is label:
+            continue
+        child.hide()
 
 
 def _reopen_after_update() -> None:
@@ -489,15 +617,30 @@ def show() -> str:
         v=12.0, pre=1,
         annotation=("Random rotation (deg) around the surface normal, "
                     "so repeat splats don't read as identical shapes."))
+    fields["splatThickness"] = cmds.floatSliderGrp(
+        l="Thickness", f=True, min=0.0, max=0.5, fmn=0.0, fmx=2.0,
+        v=0.08, pre=3,
+        annotation=("Extrude depth for the splat, as a fraction of the "
+                    "splat's base radius. 0 = flat facet, 0.08 ≈ a thin "
+                    "paint layer, higher = chunky puddle."))
 
-    cmds.separator(h=4, style="none")
+    # ---- In-UI preview: anchor + QLabel populated on demand ----
+    cmds.separator(h=6, style="none")
+    cmds.rowLayout(nc=1, adj=1, cw=(1, _PREVIEW_SIZE))
+    # `cmds.text` reserves a widget slot with a stable name; PySide2
+    # then attaches / re-uses a QLabel inside it for the pixmap.
+    cmds.text("paint_projectile_preview_anchor",
+              l="(click Preview Splat)", h=_PREVIEW_SIZE, al="center")
+    cmds.setParent("..")
     cmds.rowLayout(nc=2, adj=1, cw2=(200, 130))
     cmds.button(l="Preview Splat", h=26,
-                annotation=("Spawn a static splat at the world origin "
-                            "using the current SPLAT settings + a "
-                            "synthetic fully-grazing hit (normal +Y, "
-                            "tangent +X). Re-click to reroll shape."),
-                c=lambda *_: _preview_splat(fields))
+                annotation=("Draw a preview of the current SPLAT "
+                            "settings inside the tool window using a "
+                            "synthetic fully-grazing hit. Re-click to "
+                            "reroll shape variation. Yellow dot = "
+                            "impact, arrow = ball travel direction."),
+                c=lambda *_: (_install_preview_label_if_needed(),
+                              _preview_splat(fields)))
     cmds.button(l="Clear Preview", h=26,
                 c=lambda *_: _clear_splat_preview())
     cmds.setParent("..")

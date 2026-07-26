@@ -192,6 +192,7 @@ def create_projectile_system(
     splat_min_squeeze: float = 0.55,
     splat_rotation_jitter: float = 12.0,
     splat_forward_bias: float = 1.0,
+    splat_thickness: float = 0.08,
     impact_squash_frames: int = 1,
 ) -> ProjectileSystem:
     """Generate a projectile system.
@@ -489,6 +490,7 @@ def create_projectile_system(
                 tangent_direction=tan_dir,
                 forward_offset=forward_offset,
                 shape_asymmetry=shape_asymmetry,
+                thickness=splat_thickness,
                 rotation_jitter_degrees=splat_rotation_jitter,
                 seed=impact_info.frame,
             )

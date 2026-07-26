@@ -39,77 +39,16 @@ Vec3 = Sequence[float]
 
 
 # --------------------------------------------------------------------------- #
-# Procedural splash shape
+# Splash geometry: pure-data generator + Maya-poly builder
 # --------------------------------------------------------------------------- #
+#
+# compute_splash_geometry returns a dict of 2-D vertex lists, so it can be
+# reused for both the Maya poly build and the in-UI PySide preview without
+# duplicating the shape logic — same seed / params yields the same shape
+# in both.
 
-def _create_droplet_facet(name: str, radius: float, rng: random.Random) -> str:
-    num = rng.randint(6, 9)
-    verts = []
-    for i in range(num):
-        angle = (i / num) * math.tau
-        r = radius * (0.75 + rng.uniform(-0.15, 0.15))
-        verts.append((r * math.cos(angle), 0.0, r * math.sin(angle)))
-    return cmds.polyCreateFacet(p=verts, ch=False, n=name)[0]
-
-
-def _create_blob_facet(
-    name: str,
-    base_radius: float,
-    num_points: int,
-    irregularity: float,
-    rng: random.Random,
-    forward_mult,
-) -> str:
-    """Rounded but irregular amoeba-shaped blob — the main body of a
-    real ink splash. Radius per vertex is base_radius perturbed by a
-    sum of low-amplitude sinusoidal harmonics with random phase, so
-    the silhouette wobbles smoothly instead of resolving into a
-    recognisable star."""
-    harmonics = [(2, 0.55), (3, 0.35), (5, 0.20), (7, 0.10)]
-    phases = [rng.uniform(0.0, math.tau) for _ in harmonics]
-
-    verts = []
-    for i in range(num_points):
-        angle = (i / num_points) * math.tau
-        noise = 0.0
-        for (n_h, amp), phase in zip(harmonics, phases):
-            noise += amp * math.sin(n_h * angle + phase)
-        r = base_radius * (1.0 + irregularity * noise)
-        r *= forward_mult(angle)
-        verts.append((r * math.cos(angle), 0.0, r * math.sin(angle)))
-    return cmds.polyCreateFacet(p=verts, ch=False, n=name)[0]
-
-
-def _create_ray_facet(
-    name: str,
-    angle: float,
-    inner_radius: float,
-    outer_radius: float,
-    width_degrees: float,
-    tip_offset_degrees: float = 0.0,
-) -> str:
-    """A thin triangular streak radiating from the origin. The base
-    end sits slightly inside the main blob at ``inner_radius``; the
-    pointed tip lands at ``outer_radius`` along ``angle`` (plus an
-    optional ``tip_offset_degrees`` so the ray can slightly curve /
-    off-axis, which looks more natural than perfectly radial rays)."""
-    half_w = math.radians(width_degrees) * 0.5
-    tip_ang = angle + math.radians(tip_offset_degrees)
-    tip = (outer_radius * math.cos(tip_ang),
-           0.0,
-           outer_radius * math.sin(tip_ang))
-    left = (inner_radius * math.cos(angle + half_w),
-            0.0,
-            inner_radius * math.sin(angle + half_w))
-    right = (inner_radius * math.cos(angle - half_w),
-             0.0,
-             inner_radius * math.sin(angle - half_w))
-    return cmds.polyCreateFacet(p=[left, tip, right], ch=False, n=name)[0]
-
-
-def _create_splash_facet(
-    name: str,
-    base_radius: float,
+def compute_splash_geometry(
+    base_radius: float = 1.0,
     blob_points: int = 22,
     blob_irregularity: float = 0.28,
     ray_count_range: Tuple[int, int] = (5, 10),
@@ -122,26 +61,21 @@ def _create_splash_facet(
     droplet_max_dist: float = 2.4,
     asymmetry: float = 0.0,
     seed: Optional[int] = None,
-) -> str:
-    """Build a paint-splash silhouette by composing three parts —
-    matches how real ink splats read visually rather than trying to
-    fit a single polar function.
+) -> dict:
+    """Compute an ink-splash silhouette without touching Maya.
 
-    1. **Main blob** — an irregular amoeba shape with soft, wobbly
-       edges (no spikes on it at all). Multi-harmonic radial noise.
-    2. **Long thin rays** — separate triangular streaks at random
-       angles and lengths. Most are shortish, a few are extra-long.
-       Widths are small (a few degrees) so they read as streaks, not
-       triangles.
-    3. **Satellite droplets** — small facets scattered further out.
+    Returns::
 
-    All three parts are polyUnited into one mesh so the whole splash
-    is a single selectable object with the source shader carried
-    through.
+        {
+          'blob':     [(x, z), ...]                # closed polygon perimeter
+          'rays':     [[(x, z), (x, z), (x, z)],   # triangle strips
+                       ...]
+          'droplets': [[(x, z), ...],              # closed polygons
+                       ...]
+        }
 
-    ``asymmetry`` (0..1) biases the blob's silhouette, the rays'
-    angles, and the droplet placement so more material sits in the
-    +X direction (the ball's forward tangent) than in -X.
+    All coordinates lie in the XZ plane centred on (0, 0). ``asymmetry``
+    (0..1) biases the shape forward along +X.
     """
     rng = random.Random(seed)
 
@@ -150,49 +84,47 @@ def _create_splash_facet(
         return 1.0 - asymmetry * (1.0 - forward) * 0.7
 
     # ----- Main irregular blob body -----
-    main = _create_blob_facet(
-        name=f"{name}_body",
-        base_radius=base_radius,
-        num_points=blob_points,
-        irregularity=blob_irregularity,
-        rng=rng,
-        forward_mult=_forward_mult,
-    )
+    harmonics = [(2, 0.55), (3, 0.35), (5, 0.20), (7, 0.10)]
+    phases = [rng.uniform(0.0, math.tau) for _ in harmonics]
+    blob = []
+    for i in range(blob_points):
+        angle = (i / blob_points) * math.tau
+        noise = sum(amp * math.sin(n * angle + ph)
+                    for (n, amp), ph in zip(harmonics, phases))
+        r = base_radius * (1.0 + blob_irregularity * noise)
+        r *= _forward_mult(angle)
+        blob.append((r * math.cos(angle), r * math.sin(angle)))
 
     # ----- Long thin rays -----
-    rays: list = []
+    rays = []
     num_rays = rng.randint(*ray_count_range)
-    for i in range(num_rays):
-        # Random angle. Under asymmetry, occasionally re-roll backward
-        # angles so more rays end up on the forward side without
-        # eliminating the back-side ones entirely.
+    for _ in range(num_rays):
         angle = rng.uniform(0.0, math.tau)
         if asymmetry > 0.0 and math.cos(angle) < 0.0 \
                 and rng.random() < asymmetry * 0.7:
-            # Reflect to the forward hemisphere.
+            # Reflect back-hemisphere rays forward.
             angle = math.pi - angle
-        # Length: usually mid, occasionally very long (long_prob).
         if rng.random() < ray_long_prob:
             length_mult = rng.uniform(*ray_long_range)
         else:
             length_mult = rng.uniform(*ray_length_range)
         length_mult *= _forward_mult(angle)
         outer = base_radius * length_mult
-        # Small tip curvature so rays aren't laser-perfect radials.
+        inner = base_radius * 0.85
+        width_deg = rng.uniform(*ray_width_range)
         tip_curl = rng.uniform(-4.0, 4.0)
-        ray = _create_ray_facet(
-            name=f"{name}_ray{i}",
-            angle=angle,
-            inner_radius=base_radius * 0.85,
-            outer_radius=outer,
-            width_degrees=rng.uniform(*ray_width_range),
-            tip_offset_degrees=tip_curl,
-        )
-        rays.append(ray)
+        half_w = math.radians(width_deg) * 0.5
+        tip_ang = angle + math.radians(tip_curl)
+        tip = (outer * math.cos(tip_ang), outer * math.sin(tip_ang))
+        left = (inner * math.cos(angle + half_w),
+                inner * math.sin(angle + half_w))
+        right = (inner * math.cos(angle - half_w),
+                 inner * math.sin(angle - half_w))
+        rays.append([left, tip, right])
 
     # ----- Satellite droplets -----
-    droplets: list = []
-    for i in range(droplet_count):
+    droplets = []
+    for _ in range(droplet_count):
         if asymmetry > 0.0:
             drop_angle = rng.uniform(-math.pi * (1.0 - asymmetry * 0.8),
                                       math.pi * (1.0 - asymmetry * 0.8))
@@ -200,25 +132,92 @@ def _create_splash_facet(
             drop_angle = rng.uniform(0.0, math.tau)
         dist = base_radius * rng.uniform(droplet_min_dist, droplet_max_dist)
         dist *= _forward_mult(drop_angle)
-        r = base_radius * rng.uniform(0.06, 0.16)
-        d = _create_droplet_facet(f"{name}_drop{i}", r, rng)
-        cmds.setAttr(f"{d}.translateX", dist * math.cos(drop_angle))
-        cmds.setAttr(f"{d}.translateZ", dist * math.sin(drop_angle))
-        droplets.append(d)
+        drop_r = base_radius * rng.uniform(0.06, 0.16)
+        cx = dist * math.cos(drop_angle)
+        cz = dist * math.sin(drop_angle)
+        num_verts = rng.randint(6, 9)
+        drop_poly = []
+        for i in range(num_verts):
+            a = (i / num_verts) * math.tau
+            r = drop_r * (0.75 + rng.uniform(-0.15, 0.15))
+            drop_poly.append((cx + r * math.cos(a), cz + r * math.sin(a)))
+        droplets.append(drop_poly)
 
-    pieces = [main] + rays + droplets
+    return {"blob": blob, "rays": rays, "droplets": droplets}
+
+
+def _extrude_facet(node: str, thickness: float) -> None:
+    """Give a flat facet solid thickness by extruding all its faces
+    along their normal (which is +Y for our XZ-plane facets)."""
+    if thickness <= 0.0:
+        return
+    faces = f"{node}.f[*]"
+    try:
+        cmds.polyExtrudeFacet(faces, ltz=thickness,
+                              keepFacesTogether=True, ch=False)
+    except Exception:
+        # Fallback: some Maya versions require polyExtrudeFace instead.
+        try:
+            cmds.polyExtrudeFace(faces, ltz=thickness,
+                                 keepFacesTogether=True, ch=False)
+        except Exception:
+            pass
+
+
+def _create_splash_facet(
+    name: str,
+    base_radius: float,
+    thickness: float = 0.05,
+    **geometry_kwargs,
+) -> str:
+    """Build the splash as real Maya polys: one facet per piece (blob,
+    rays, droplets), each extruded upward by ``thickness`` × base_radius
+    so the splat has a bit of volume, then polyUnited into a single
+    selectable mesh.
+    """
+    geom = compute_splash_geometry(base_radius=base_radius, **geometry_kwargs)
+
+    pieces = []
+
+    body = cmds.polyCreateFacet(
+        p=[(x, 0.0, z) for x, z in geom["blob"]],
+        ch=False, n=f"{name}_body",
+    )[0]
+    _extrude_facet(body, thickness * base_radius)
+    pieces.append(body)
+
+    for i, ray_verts in enumerate(geom["rays"]):
+        ray = cmds.polyCreateFacet(
+            p=[(x, 0.0, z) for x, z in ray_verts],
+            ch=False, n=f"{name}_ray{i}",
+        )[0]
+        # Rays are thinner in silhouette; give them a proportional
+        # (slightly thinner) extrude so they don't visually dominate.
+        _extrude_facet(ray, thickness * base_radius * 0.6)
+        pieces.append(ray)
+
+    for i, drop_verts in enumerate(geom["droplets"]):
+        drop = cmds.polyCreateFacet(
+            p=[(x, 0.0, z) for x, z in drop_verts],
+            ch=False, n=f"{name}_drop{i}",
+        )[0]
+        _extrude_facet(drop, thickness * base_radius * 0.5)
+        pieces.append(drop)
+
     if len(pieces) > 1:
         combined = cmds.polyUnite(pieces, ch=False)[0]
         cmds.delete(combined, ch=True)
         combined = cmds.rename(combined, name)
         return combined
-    return cmds.rename(main, name)
+    return cmds.rename(pieces[0], name)
 
 
 def _create_default_splat_mesh(name: str, base_radius: float = 1.0,
                                 asymmetry: float = 0.0,
+                                thickness: float = 0.05,
                                 seed: Optional[int] = None) -> str:
     return _create_splash_facet(name=name, base_radius=base_radius,
+                                thickness=thickness,
                                 asymmetry=asymmetry, seed=seed)
 
 
@@ -291,6 +290,7 @@ def create_splat(
     tangent_direction: Optional[Vec3] = None,
     forward_offset: float = 0.0,
     shape_asymmetry: float = 0.0,
+    thickness: float = 0.05,
     rotation_jitter_degrees: float = 0.0,
     seed: Optional[int] = None,
 ) -> str:
@@ -338,6 +338,7 @@ def create_splat(
     else:
         splat = _create_default_splat_mesh(name, base_radius=1.0,
                                            asymmetry=shape_asymmetry,
+                                           thickness=thickness,
                                            seed=seed)
 
     if parent:
