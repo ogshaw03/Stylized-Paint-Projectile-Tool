@@ -432,6 +432,150 @@ print(f"sha256   : {sha}")
 - `paint_projectile/ui.py` — Update ボタン (`_update_from_github` + `_run_update` + `_reopen_after_update`)
 - `paint_projectile/__init__.py` — `__version__`
 
-新しい Maya ツールを作るときは、これらのファイルをテンプレとしてコピー → 定数
-(`_GITHUB_OWNER`, `_GITHUB_REPO`, `_PACKAGE`, `_LAUNCHER`, `_SHELF_BUTTON_LABEL` など)
-を置換すれば同じ体験のツールが 30 分で立ち上がる。
+さらに **新規ツール向けにインフラだけ抜き出したテンプレート** を
+`docs/reference-code/` に置いてある:
+
+```
+docs/reference-code/
+├── README.md      ← セットアップ手順 / 検証チェックリスト
+├── install.py     ← ドラッグ&ドロップ installer 単体テンプレ
+└── my_tool.py     ← ツール本体テンプレ (__version__ + show() + Update)
+```
+
+2 ファイル (`install.py` + `my_tool.py`) だけコピー → 定数を書き換え → GitHub push、
+で同じ配布・更新体験のツールが立ち上がる。
+
+---
+
+## 6. テンプレの CUSTOMIZE ブロック — 書き換え必須の定数
+
+`docs/reference-code/` のテンプレは冒頭に `# ─── CUSTOMIZE ───` で挟まれた
+定数ブロックを持っている。**書き換えが必要なのはこのブロックだけ**、他は
+そのままで動く。
+
+### 6-1. `install.py` (5 定数)
+
+```python
+# ─── CUSTOMIZE ────────────────────────────────────────────────────────────
+_GITHUB_OWNER = "YOUR_GITHUB_USERNAME"
+_GITHUB_REPO = "YOUR_REPO_NAME"
+_GITHUB_BRANCH = "main"
+
+_MODULE = "my_tool"                     # your tool's .py filename (no .py)
+_SHELF_BUTTON_LABEL = "MyTool"          # short label on the shelf button
+# ─── END CUSTOMIZE ────────────────────────────────────────────────────────
+```
+
+| 定数 | 説明 | 例 |
+|---|---|---|
+| `_GITHUB_OWNER` | GitHub のアカウント名 / Organization 名 | `"ogshaw03"` |
+| `_GITHUB_REPO`  | リポジトリ名 (owner/repo の repo 部分) | `"paint-projectile-tool"` |
+| `_GITHUB_BRANCH`| ダウンロード対象ブランチ (通常 `"main"`) | `"main"` |
+| `_MODULE`       | ツール本体 `.py` のモジュール名 (`.py` 抜き) | `"paint_projectile"` |
+| `_SHELF_BUTTON_LABEL` | シェルフに表示する短い名前 (10 文字以下推奨) | `"PaintFX"` |
+
+### 6-2. `my_tool.py` (4 定数)
+
+```python
+WINDOW = "myToolWin"      # match install.py's _close_existing_window() target
+
+# ─── CUSTOMIZE ────────────────────────────────────────────────────────────
+_GITHUB_OWNER = "YOUR_GITHUB_USERNAME"
+_GITHUB_REPO = "YOUR_REPO_NAME"
+_GITHUB_BRANCH = "main"
+_PACKAGE = "my_tool"        # matches this file's module name
+# ─── END CUSTOMIZE ────────────────────────────────────────────────────────
+```
+
+| 定数 | 説明 |
+|---|---|
+| `_GITHUB_OWNER` / `_GITHUB_REPO` / `_GITHUB_BRANCH` | install.py と **同一値** にする |
+| `_PACKAGE` | このファイル自身のモジュール名 (= install.py の `_MODULE`) |
+| `WINDOW`   | ツールウィンドウの一意名。install.py の `_close_existing_window` は `f"{_MODULE}Win"` を探すので、**`_MODULE + "Win"` にしておくと自動で一致する** |
+
+### 6-3. モジュール名 = ファイル名 = 3 か所同一
+
+3 か所を一致させることが唯一の落とし穴:
+
+```
+実ファイル名:               <MODULE_NAME>.py
+install.py の  _MODULE   :  <MODULE_NAME>
+my_tool.py の  _PACKAGE  :  <MODULE_NAME>
+```
+
+例: 新ツール名を `paint_projectile` にする場合:
+
+```
+paint_projectile.py                ← ファイル自体を this にリネーム
+install.py:      _MODULE  = "paint_projectile"
+paint_projectile.py: _PACKAGE = "paint_projectile"
+paint_projectile.py: WINDOW   = "paint_projectileWin"   ← _MODULE + "Win"
+```
+
+これ以外 (`_GITHUB_OWNER`, `_GITHUB_REPO`, `_SHELF_BUTTON_LABEL`, `WINDOW`) は
+好きに命名して OK。
+
+### 6-4. コード側で書き換えるのは 1 か所だけ
+
+`my_tool.py` の `_build_body()` を自分の UI に置き換える:
+
+```python
+def _build_body() -> None:
+    """Placeholder tool UI. Replace with your real controls."""
+    # ← ここに cmds.textFieldButtonGrp / cmds.floatSliderGrp などを並べる
+```
+
+update 関連の関数 (`_resolve_latest_sha`, `update_from_github`, `_run_update`,
+`_reopen_after_update`) と `show()` の外枠 (window / footer / Update ボタン) は
+**触らない**。
+
+### 6-5. 追加モジュールを作る場合
+
+`my_tool.py` が肥大化してきたら追加ファイルに分割することになる。
+その場合の作業:
+
+1. `my_tool/` フォルダ を作って `__init__.py` + サブモジュール群にリファクタ
+   (single-file → package 化)
+2. `install.py` の `_fetch_module` を「単一ファイルダウンロード」から
+   「ファイル一覧ダウンロード」に拡張 → `_REMOTE_FILES` タプルを追加
+3. **新規モジュールを追加したら必ず `_REMOTE_FILES` にも追記** (§1-10 で
+   踏んだ落とし穴の再発防止)
+4. `_flush_imports` をパッケージ全体をポップするパターンに変更
+
+このリポジトリ本体 (`paint_projectile/` パッケージ) の `install.py` +
+`ui.py` が拡張後の実装例そのもの。参考にする。
+
+---
+
+## 7. 新ツール セッションでの Claude へのプロンプト テンプレ
+
+新ツール開発を Claude に頼む時のプロンプト:
+
+```
+新しい Maya ツール "<ツール名>" を作りたい。
+配布とアップデートは以下の参考実装のパターンで組み込んで:
+
+  https://github.com/ogshaw03/Stylized-Paint-Projectile-Tool/blob/main/docs/maya-hot-update-patterns.md
+  https://github.com/ogshaw03/Stylized-Paint-Projectile-Tool/blob/main/docs/reference-code/install.py
+  https://github.com/ogshaw03/Stylized-Paint-Projectile-Tool/blob/main/docs/reference-code/my_tool.py
+
+上記 3 ファイルの内容を WebFetch して読み込み、install.py と <ツール名>.py の
+CUSTOMIZE ブロック (§6) を以下で埋めて:
+
+  GitHub owner: <あなたの GitHub アカウント>
+  リポジトリ名: <新リポジトリ名>
+  モジュール名: <スネークケース、ファイル名にもする>
+  シェルフボタン ラベル: <10 文字以下>
+
+そのあと <ツール名>.py の _build_body() に、以下の機能を実装:
+
+  ・<機能 1>
+  ・<機能 2>
+  ...
+
+配布インフラは変えず (patterns doc §1-10 に登録忘れ注意)、
+ツール中身だけを追加してください。
+```
+
+Claude が参考ファイルを読み込んで、CUSTOMIZE ブロックを埋め、
+機能実装まで一気にできる。
