@@ -8,14 +8,20 @@ Two ways to run this file from inside Maya:
 
 2) From the Script Editor (Python tab)::
 
-       exec(open(r"C:/path/to/Stylized-Paint-Projectile-Tool/install.py").read())
+       exec(open(r"C:/path/to/install.py").read())
 
 Both do the same thing:
 
-* Copy the ``paint_projectile/`` package and ``paint_projectile_launch.py``
-  into your Maya user scripts folder (``cmds.internalVar(userScriptDir=True)``).
+* Copy (or download) the ``paint_projectile/`` package and
+  ``paint_projectile_launch.py`` into your Maya user scripts folder
+  (``cmds.internalVar(userScriptDir=True)``).
 * Ensure that folder is on ``sys.path`` for the current session.
 * Add a ``PaintFX`` shelf button to the active shelf.
+
+If ``install.py`` is run standalone (downloaded by itself without the rest
+of the repo), the source files are fetched from GitHub over HTTPS. If run
+from inside a checkout of the repository, the local files are used
+instead.
 
 After install you can launch the tool with either the shelf button or::
 
@@ -35,14 +41,26 @@ _PACKAGE = "paint_projectile"
 _LAUNCHER = "paint_projectile_launch.py"
 _SHELF_BUTTON_LABEL = "PaintFX"
 
+# GitHub source for the standalone / drag-and-drop-only case, where
+# install.py was downloaded by itself.
+_GITHUB_OWNER = "ogshaw03"
+_GITHUB_REPO = "Stylized-Paint-Projectile-Tool"
+_GITHUB_BRANCH = "main"
+_GITHUB_RAW = (
+    f"https://raw.githubusercontent.com/{_GITHUB_OWNER}/{_GITHUB_REPO}/"
+    f"{_GITHUB_BRANCH}"
+)
+_REMOTE_FILES = (
+    f"{_PACKAGE}/__init__.py",
+    f"{_PACKAGE}/trajectory.py",
+    f"{_PACKAGE}/system.py",
+    f"{_PACKAGE}/ui.py",
+    _LAUNCHER,
+)
 
-def _copy_package(dest_root: str) -> None:
+
+def _copy_from_local(dest_root: str) -> None:
     src_pkg = os.path.join(_REPO_ROOT, _PACKAGE)
-    if not os.path.isdir(src_pkg):
-        raise RuntimeError(
-            f"'{_PACKAGE}' package not found next to install.py "
-            f"(looked in {_REPO_ROOT!r}). Run install.py from the repo root."
-        )
     dst_pkg = os.path.join(dest_root, _PACKAGE)
     if os.path.isdir(dst_pkg):
         shutil.rmtree(dst_pkg)
@@ -51,6 +69,47 @@ def _copy_package(dest_root: str) -> None:
     src_launcher = os.path.join(_REPO_ROOT, _LAUNCHER)
     dst_launcher = os.path.join(dest_root, _LAUNCHER)
     shutil.copy2(src_launcher, dst_launcher)
+
+
+def _download_from_github(dest_root: str) -> None:
+    """Fetch the package files from GitHub when the local package folder
+    isn't sitting next to install.py (common case: user downloaded only
+    install.py)."""
+    try:
+        from urllib.request import urlopen  # Py3
+    except ImportError:  # pragma: no cover - Maya 2023 is Py3 only
+        from urllib2 import urlopen  # type: ignore
+
+    dst_pkg = os.path.join(dest_root, _PACKAGE)
+    if os.path.isdir(dst_pkg):
+        shutil.rmtree(dst_pkg)
+    os.makedirs(dst_pkg)
+
+    for rel_path in _REMOTE_FILES:
+        url = f"{_GITHUB_RAW}/{rel_path}"
+        target = os.path.join(dest_root, rel_path.replace("/", os.sep))
+        os.makedirs(os.path.dirname(target), exist_ok=True)
+        print(f"[paint_projectile] downloading {url}")
+        try:
+            response = urlopen(url, timeout=30)
+            data = response.read()
+        except Exception as exc:  # network/SSL failure — surface clearly
+            raise RuntimeError(
+                f"Failed to download {url}: {exc}. "
+                "Check your internet connection, or download the full "
+                "repository ZIP from GitHub and run install.py from its root."
+            )
+        with open(target, "wb") as fh:
+            fh.write(data)
+
+
+def _copy_package(dest_root: str) -> None:
+    src_pkg = os.path.join(_REPO_ROOT, _PACKAGE)
+    src_launcher = os.path.join(_REPO_ROOT, _LAUNCHER)
+    if os.path.isdir(src_pkg) and os.path.isfile(src_launcher):
+        _copy_from_local(dest_root)
+    else:
+        _download_from_github(dest_root)
 
 
 def _flush_imports() -> None:
