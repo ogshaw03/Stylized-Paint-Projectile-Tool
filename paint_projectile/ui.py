@@ -74,6 +74,38 @@ def _pick_single(text_field: str, node_type_filter: Optional[str] = None) -> Non
     cmds.textFieldButtonGrp(text_field, e=True, text=node)
 
 
+def _pick_multi(text_field: str, node_type_filter: Optional[str] = None) -> None:
+    """Append every selected mesh-carrying transform to the field as a
+    comma-separated list. Duplicates are skipped."""
+    sel = cmds.ls(sl=True, l=False) or []
+    if not sel:
+        cmds.warning("Nothing selected.")
+        return
+    existing = cmds.textFieldButtonGrp(text_field, q=True, text=True).strip()
+    current = [s.strip() for s in existing.split(",") if s.strip()]
+    added = 0
+    for node in sel:
+        if node_type_filter == "mesh":
+            shapes = cmds.listRelatives(node, ad=True, s=True,
+                                        type="mesh") or []
+            if not shapes:
+                continue
+        if node not in current:
+            current.append(node)
+            added += 1
+    cmds.textFieldButtonGrp(text_field, e=True, text=", ".join(current))
+    if added == 0:
+        cmds.warning("No new mesh-carrying selection to add.")
+
+
+def _clear_field(text_field: str) -> None:
+    cmds.textFieldButtonGrp(text_field, e=True, text="")
+
+
+def _parse_csv(text: str) -> list:
+    return [s.strip() for s in text.split(",") if s.strip()]
+
+
 def _on_generate(fields):
     mesh = cmds.textFieldButtonGrp(fields["mesh"], q=True, text=True).strip()
     start = cmds.textFieldButtonGrp(fields["start"], q=True, text=True).strip()
@@ -90,6 +122,15 @@ def _on_generate(fields):
     end_frame = int(cmds.intFieldGrp(fields["endFrame"], q=True, v1=True))
     name = cmds.textFieldGrp(fields["name"], q=True, text=True).strip() or "paintBall"
 
+    colliders = _parse_csv(cmds.textFieldButtonGrp(
+        fields["colliders"], q=True, text=True))
+    splat_templates = _parse_csv(cmds.textFieldButtonGrp(
+        fields["splatTemplates"], q=True, text=True))
+    splat_scale = cmds.floatSliderGrp(fields["splatScale"], q=True, v=True)
+    splat_offset = cmds.floatSliderGrp(fields["splatOffset"], q=True, v=True)
+    splat_grow = int(cmds.intFieldGrp(fields["splatGrow"], q=True, v1=True))
+    squash_frames = int(cmds.intFieldGrp(fields["squashFrames"], q=True, v1=True))
+
     result = _system.create_projectile_system(
         mesh=mesh,
         start=start,
@@ -100,13 +141,31 @@ def _on_generate(fields):
         end_frame=end_frame,
         name=name,
         camera=cam or None,
+        collision_meshes=colliders or None,
+        splat_templates=splat_templates or None,
+        splat_scale=splat_scale,
+        splat_surface_offset=splat_offset,
+        splat_grow_frames=splat_grow,
+        impact_squash_frames=squash_frames,
     )
     cmds.select(result.controller, r=True)
-    cmds.inViewMessage(
-        amg=f"Generated <hl>{result.controller}</hl>",
-        pos="topCenter",
-        fade=True,
-    )
+
+    if colliders:
+        if result.impact is not None:
+            cmds.inViewMessage(
+                amg=(f"Generated <hl>{result.controller}</hl>  |  "
+                     f"impact f={result.impact.frame} on "
+                     f"<hl>{result.impact.collider}</hl>"),
+                pos="topCenter", fade=True)
+        else:
+            cmds.inViewMessage(
+                amg=(f"Generated <hl>{result.controller}</hl>  |  "
+                     "no collision detected on base trajectory"),
+                pos="topCenter", fade=True)
+    else:
+        cmds.inViewMessage(
+            amg=f"Generated <hl>{result.controller}</hl>",
+            pos="topCenter", fade=True)
 
 
 def _update_from_github(*_args) -> None:
@@ -256,6 +315,55 @@ def show() -> str:
     fields["endFrame"] = cmds.intFieldGrp(l="End Frame", nf=1,
                                           v1=int(cmds.playbackOptions(q=True, max=True)))
     fields["name"] = cmds.textFieldGrp(l="Name", tx="paintBall")
+    cmds.setParent("..")
+    cmds.setParent("..")
+
+    cmds.frameLayout(l="COLLISION", cll=True, cl=False, mh=6, mw=6)
+    cmds.columnLayout(adj=True, rs=4)
+    fields["colliders"] = cmds.textFieldButtonGrp(
+        l="Colliders", bl="Add Selected",
+        annotation=("Meshes to ray-cast the base trajectory against. "
+                    "Comma-separated. Add-Selected appends selected "
+                    "mesh transforms."),
+        bc=lambda *_: _pick_multi(fields["colliders"], "mesh"),
+        cw=[(1, 60), (2, 220), (3, 100)])
+    cmds.button(l="Clear Colliders", h=22,
+                c=lambda *_: _clear_field(fields["colliders"]))
+    cmds.setParent("..")
+    cmds.setParent("..")
+
+    cmds.frameLayout(l="IMPACT", cll=True, cl=False, mh=6, mw=6)
+    cmds.columnLayout(adj=True, rs=4)
+    fields["squashFrames"] = cmds.intFieldGrp(
+        l="Squash Frames", nf=1, v1=1,
+        annotation=("Frames after impact before the projectile hides. "
+                    "The squash key lands squash_frames after impact, "
+                    "then vanishes the frame after that."))
+    cmds.setParent("..")
+    cmds.setParent("..")
+
+    cmds.frameLayout(l="SPLAT", cll=True, cl=False, mh=6, mw=6)
+    cmds.columnLayout(adj=True, rs=4)
+    fields["splatTemplates"] = cmds.textFieldButtonGrp(
+        l="Templates", bl="Add Selected",
+        annotation=("Optional splat template meshes; one is picked at "
+                    "random per shot. Leave empty for a default flat "
+                    "disc."),
+        bc=lambda *_: _pick_multi(fields["splatTemplates"], "mesh"),
+        cw=[(1, 60), (2, 220), (3, 100)])
+    cmds.button(l="Clear Templates", h=22,
+                c=lambda *_: _clear_field(fields["splatTemplates"]))
+    fields["splatScale"] = cmds.floatSliderGrp(
+        l="Scale", f=True, min=0.0, max=10.0, fmn=0.0, fmx=1000.0,
+        v=1.0, pre=2)
+    fields["splatOffset"] = cmds.floatSliderGrp(
+        l="Surface Offset", f=True, min=0.0, max=1.0, fmn=0.0, fmx=100.0,
+        v=0.01, pre=3,
+        annotation=("Distance the splat is nudged along the surface "
+                    "normal so it doesn't Z-fight the collider."))
+    fields["splatGrow"] = cmds.intFieldGrp(
+        l="Grow Frames", nf=1, v1=2,
+        annotation="Frames over which the splat scales 0 -> full.")
     cmds.setParent("..")
     cmds.setParent("..")
 

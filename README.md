@@ -23,8 +23,11 @@ Maya 2023 / Python 向けの、アニメ作品用「ペイント弾／液体弾�
 | 8 | タメ・ツメ演出 | `trajectoryTime` を Graph Editor で編集 |
 | 9 | Camera Space Offset | `cameraOffsetX/Y`, `cameraDepth` + `pointMatrixMult` |
 | 10 | Auto Smear 用 Velocity | `velocityX/Y/Z`, `velocityMagnitude` (readonly output) |
+| §14 | Collision Detection | `collision.detect_impact` (MFnMesh.closestIntersection) |
+| §15 | Impact Animation | `impact.apply_impact_animation` (squash + hide keys) |
+| §16 | Splat Geometry | `splat.create_splat` / `create_splats_from_candidates` |
 
-Smear / Collision / Splat / Droplet は今後の段階で追加予定。
+Stylized Smear (§11-§13) / Droplet (§17) / Bake (§20) は今後の段階で追加予定。
 
 ---
 

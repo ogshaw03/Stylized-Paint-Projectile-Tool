@@ -24,8 +24,11 @@ Non-destructive:
 
 from __future__ import annotations
 
-from typing import Optional, Sequence, Tuple, List
+from typing import Iterable, List, Optional, Sequence, Tuple
 
+from . import collision as _collision
+from . import impact as _impact
+from . import splat as _splat
 from . import trajectory as _traj
 
 try:
@@ -117,7 +120,9 @@ class ProjectileSystem:
 
     def __init__(self, name: str, group: str, controller: str, projectile: str,
                  mesh: str, base_curves: Tuple[str, str, str],
-                 velocity_curves: Tuple[str, str, str]):
+                 velocity_curves: Tuple[str, str, str],
+                 impact: Optional["_collision.ImpactInfo"] = None,
+                 splat: Optional[str] = None):
         self.name = name
         self.group = group
         self.controller = controller
@@ -125,6 +130,8 @@ class ProjectileSystem:
         self.mesh = mesh
         self.base_curves = base_curves
         self.velocity_curves = velocity_curves
+        self.impact = impact       # ImpactInfo or None if no collision
+        self.splat = splat         # splat transform name or None
 
     def __repr__(self) -> str:
         return f"<ProjectileSystem {self.name!r} ctrl={self.controller!r}>"
@@ -175,6 +182,13 @@ def create_projectile_system(
     end_frame: Optional[int] = None,
     name: str = "paintBall",
     camera: Optional[str] = None,
+    collision_meshes: Optional[Iterable[str]] = None,
+    splat_template: Optional[str] = None,
+    splat_templates: Optional[Iterable[str]] = None,
+    splat_scale: float = 1.0,
+    splat_surface_offset: float = 0.01,
+    splat_grow_frames: int = 2,
+    impact_squash_frames: int = 1,
 ) -> ProjectileSystem:
     """Generate a projectile system.
 
@@ -200,6 +214,23 @@ def create_projectile_system(
     camera : str, optional
         Camera transform or shape whose orientation drives the camera-space
         offset. Defaults to the active viewport camera.
+    collision_meshes : iterable of str, optional
+        Collider meshes to ray-cast the base trajectory against. If given
+        and a hit is detected, the projectile squashes and hides at
+        impact and a splat mesh is spawned on the hit surface.
+    splat_template, splat_templates : optional
+        Either a single template mesh (``splat_template``) or a list of
+        candidates (``splat_templates``) — one is picked at random.
+        If neither is provided a default flat disc is generated.
+    splat_scale : float
+        Final scale of the spawned splat mesh.
+    splat_surface_offset : float
+        Distance to offset the splat along the surface normal to avoid
+        Z-fighting with the collider.
+    splat_grow_frames : int
+        Number of frames over which the splat scales from 0 to full.
+    impact_squash_frames : int
+        Number of frames after impact before the projectile hides.
     """
     if cmds is None:
         raise RuntimeError("This function must be called from within Maya.")
@@ -352,6 +383,61 @@ def create_projectile_system(
     cmds.connectAttr(f"{vel_z}.output", f"{vmag}.point1Z", f=True)
     cmds.connectAttr(f"{vmag}.distance", f"{ctrl}.velocityMagnitude", f=True)
 
+    # ------------------------------------------------------------------ #
+    # Collision detection -> Impact animation -> Splat geometry (§14-16)
+    # ------------------------------------------------------------------ #
+    impact_info = None
+    splat_name = None
+    colliders = list(collision_meshes) if collision_meshes else []
+    if colliders:
+        impact_info = _collision.detect_impact(
+            positions=positions,
+            velocities=velocities,
+            start_frame=start_frame,
+            collision_meshes=colliders,
+        )
+        if impact_info is not None:
+            # Freeze the projectile at the impact frame: squash + hide.
+            _impact.apply_impact_animation(
+                projectile_xform=proj_xform,
+                impact_frame=impact_info.frame,
+                squash_frames=impact_squash_frames,
+            )
+            # Also freeze trajectory time so worldOffset / cameraOffset
+            # keys the animator adds after impact don't drag a hidden
+            # ball around behind the splat.
+            cmds.setKeyframe(ctrl, at="trajectoryTime",
+                             t=impact_info.frame,
+                             v=float(impact_info.frame),
+                             inTangentType="linear",
+                             outTangentType="linear")
+            hold_frame = impact_info.frame + impact_squash_frames + 1
+            if hold_frame <= end_frame:
+                cmds.setKeyframe(ctrl, at="trajectoryTime",
+                                 t=hold_frame,
+                                 v=float(impact_info.frame),
+                                 inTangentType="linear",
+                                 outTangentType="linear")
+
+            # Spawn the splat under the same group so the whole shot is
+            # one selectable unit.
+            candidates = []
+            if splat_templates:
+                candidates = [m for m in splat_templates if m]
+            elif splat_template:
+                candidates = [splat_template]
+            splat_name = _splat.create_splats_from_candidates(
+                base_name=f"{name}_splat",
+                position=impact_info.position,
+                normal=impact_info.normal,
+                template_candidates=candidates,
+                parent=group,
+                surface_offset=splat_surface_offset,
+                spawn_frame=impact_info.frame + impact_squash_frames,
+                grow_frames=splat_grow_frames,
+                scale=splat_scale,
+            )
+
     # Snap current time so the animator sees the first sample immediately.
     cmds.currentTime(start_frame, edit=True)
 
@@ -363,4 +449,6 @@ def create_projectile_system(
         mesh=dup,
         base_curves=(base_x, base_y, base_z),
         velocity_curves=(vel_x, vel_y, vel_z),
+        impact=impact_info,
+        splat=splat_name,
     )
