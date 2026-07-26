@@ -160,6 +160,14 @@ python -m unittest tests.test_trajectory
 
 ---
 
+## 開発者向けドキュメント
+
+- [`docs/maya-hot-update-patterns.md`](docs/maya-hot-update-patterns.md)
+  ── Maya ツールを「ドラッグ 1 回 + Update ボタン運用」で配布するための
+  失敗パターン / 成功パターン / 参考実装。他の Maya ツール開発時にテンプレとして再利用可能。
+
+---
+
 ## 今後の拡張予定 (仕様書 §11-§20)
 
 - Stylized Smear (BlendShape / Lattice / Curve Deformer)
