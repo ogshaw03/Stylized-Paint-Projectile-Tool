@@ -83,13 +83,25 @@ def _update_from_github(*_args) -> None:
     """Fetch install.py from GitHub and run it inline. This bypasses the
     drag-and-drop-caching issue where Maya won't re-run install.py in
     the same session."""
+    import random
+    import sys
     import time
+    import traceback
     import urllib.request
 
-    url = f"{_INSTALL_URL}?_={time.time()}"
+    # High-entropy cache-buster + no-cache headers so no proxy or edge
+    # cache can hand us back a stale install.py.
+    salt = f"{time.time():.6f}_{random.randint(0, 2 ** 32)}"
+    url = f"{_INSTALL_URL}?_={salt}"
     print(f"[paint_projectile] update: fetching {url}")
     try:
-        source = urllib.request.urlopen(url, timeout=30).read()
+        req = urllib.request.Request(url, headers={
+            "Cache-Control": "no-cache, no-store, must-revalidate",
+            "Pragma": "no-cache",
+            "Expires": "0",
+            "User-Agent": f"paint_projectile-updater/{salt}",
+        })
+        source = urllib.request.urlopen(req, timeout=30).read()
     except Exception as exc:
         cmds.confirmDialog(
             title="Update failed",
@@ -99,22 +111,47 @@ def _update_from_github(*_args) -> None:
         return
 
     ns = {"__name__": "install", "__file__": "<github>"}
-    # exec install.py — its module-level auto-run will call install()
-    # which overwrites files, refreshes the shelf button, and shows a
-    # confirmation dialog with the version delta.
-    exec(compile(source, "install.py (from GitHub)", "exec"), ns)
+    try:
+        exec(compile(source, "install.py (from GitHub)", "exec"), ns)
+    except Exception as exc:
+        traceback.print_exc()
+        cmds.confirmDialog(
+            title="Update failed",
+            message=(
+                "install.py raised an exception while running:\n"
+                f"{type(exc).__name__}: {exc}\n\n"
+                "See Script Editor for the full traceback."
+            ),
+            button=["OK"],
+        )
+        return
 
-    # Close and re-open ourselves so the new version's UI is what the
-    # user sees.
+    # Force-drop the running package so the very next import reads the
+    # freshly overwritten files from disk. install() already does this
+    # once, but a defensive second pass is cheap and makes the reopen
+    # deterministic if the module was somehow re-imported in between.
     if cmds.window(WINDOW, exists=True):
         cmds.deleteUI(WINDOW)
-    import sys
-    for m in [k for k in list(sys.modules)
-              if k == "paint_projectile" or k.startswith("paint_projectile.")
-              or k == "paint_projectile_launch"]:
-        sys.modules.pop(m, None)
-    import paint_projectile_launch
-    paint_projectile_launch.show()
+    for _m in [k for k in list(sys.modules)
+               if k == "paint_projectile" or k.startswith("paint_projectile.")
+               or k == "paint_projectile_launch"]:
+        sys.modules.pop(_m, None)
+
+    try:
+        import paint_projectile_launch
+        paint_projectile_launch.show()
+    except Exception as exc:
+        traceback.print_exc()
+        cmds.confirmDialog(
+            title="Reopen failed",
+            message=(
+                "Update finished but the tool window could not be "
+                f"reopened:\n{type(exc).__name__}: {exc}\n\n"
+                "Click the PaintFX shelf button to open the new "
+                "version manually."
+            ),
+            button=["OK"],
+        )
 
 
 def show() -> str:

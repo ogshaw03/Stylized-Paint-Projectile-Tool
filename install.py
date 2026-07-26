@@ -168,23 +168,32 @@ def _copy_from_local(dest_root: str) -> None:
 
 
 def _download_from_github(dest_root: str) -> None:
+    import random
+    import time
     from urllib.request import Request, urlopen
 
     dst_pkg = os.path.join(dest_root, _PACKAGE)
     _force_rmtree(dst_pkg)
     os.makedirs(dst_pkg, exist_ok=True)
 
-    # Cache-busting query so a corporate proxy / browser cache never
-    # serves a stale copy from the last download attempt.
-    cache_bust = f"?_={os.getpid()}"
-
     for rel_path in _REMOTE_FILES:
+        # High-entropy cache-buster per FILE (not per session): time to
+        # microseconds + random int. Using os.getpid() alone gave the
+        # same URL every call within one Maya session, so any GitHub
+        # edge / corporate proxy that cached the first response kept
+        # serving it forever until Maya was restarted.
+        cache_bust = f"?_={time.time():.6f}_{random.randint(0, 2**32)}"
         url = f"{_GITHUB_RAW}/{rel_path}{cache_bust}"
         target = os.path.join(dest_root, rel_path.replace("/", os.sep))
         print(f"[paint_projectile] downloading {url}")
         try:
-            req = Request(url, headers={"Cache-Control": "no-cache",
-                                        "Pragma": "no-cache"})
+            req = Request(url, headers={
+                "Cache-Control": "no-cache, no-store, must-revalidate",
+                "Pragma": "no-cache",
+                "Expires": "0",
+                # A distinct User-Agent avoids any UA-keyed cache too.
+                "User-Agent": f"paint_projectile-installer/{cache_bust[3:]}",
+            })
             data = urlopen(req, timeout=30).read()
         except Exception as exc:
             raise RuntimeError(
