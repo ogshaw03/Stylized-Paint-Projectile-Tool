@@ -147,45 +147,51 @@ def compute_splash_geometry(
 
 
 def _extrude_facet(node: str, thickness: float) -> None:
-    """Give a flat facet solid thickness by extruding all its faces
-    along their normal (which is +Y for our XZ-plane facets), then
-    bevel the resulting sharp edges and soft-edge all shading so the
-    splat reads as wet paint rather than a cardboard cutout."""
+    """Give a flat facet real dome-shaped volume by extruding it in
+    several small steps, each with a progressively tighter taper. The
+    resulting side profile is a rounded pillow — thickest at the
+    centre, curving smoothly down to zero at the perimeter — instead
+    of the straight prism you'd get from a single-shot extrude.
+
+    Steps are chosen so the total height still equals ``thickness`` and
+    the ratio of consecutive scales approximates a cos(θ) fall-off
+    (dense taper near the top, gentle near the base). Final polySoftEdge
+    smooths shading across the resulting side rings.
+    """
     if thickness <= 0.0:
         return
     faces = f"{node}.f[*]"
 
-    # Small taper of the top face so the profile reads as a rounded
-    # cap instead of a straight prism when viewed from the side.
-    try:
-        cmds.polyExtrudeFacet(faces, ltz=thickness,
-                              keepFacesTogether=True,
-                              localScaleX=0.85, localScaleZ=0.85,
-                              ch=False)
-    except Exception:
+    # (height fraction of `thickness`, relative scale applied to top
+    # face each step). Cumulative scale after all steps ≈ 0.94 · 0.78
+    # · 0.55 · 0.30 ≈ 0.12 — nearly a point at the summit, so the
+    # profile domes without leaving a visible flat top.
+    steps = (
+        (0.32, 0.94),   # base → lower shoulder: barely taper
+        (0.30, 0.80),   # lower → mid
+        (0.24, 0.60),   # mid → upper
+        (0.14, 0.35),   # upper → cap
+    )
+    for height_frac, scale_frac in steps:
+        step_h = thickness * height_frac
         try:
-            cmds.polyExtrudeFace(faces, ltz=thickness,
-                                 keepFacesTogether=True,
-                                 localScaleX=0.85, localScaleZ=0.85,
-                                 ch=False)
+            cmds.polyExtrudeFacet(faces, ltz=step_h,
+                                  keepFacesTogether=True,
+                                  localScaleX=scale_frac,
+                                  localScaleZ=scale_frac,
+                                  ch=False)
         except Exception:
-            pass
+            try:
+                cmds.polyExtrudeFace(faces, ltz=step_h,
+                                     keepFacesTogether=True,
+                                     localScaleX=scale_frac,
+                                     localScaleZ=scale_frac,
+                                     ch=False)
+            except Exception:
+                break
 
-    # Bevel the newly-created 90° edges so silhouettes are round.
-    try:
-        cmds.polyBevel3(f"{node}.e[*]",
-                        fraction=min(0.4, thickness * 3.0),
-                        offsetAsFraction=True,
-                        segments=1, autoFit=1, ch=False)
-    except Exception:
-        try:
-            cmds.polyBevel(f"{node}.e[*]",
-                           offset=thickness * 0.35, segments=1, ch=False)
-        except Exception:
-            pass
-
-    # Smooth shading (single hard-edge set at 180° = all edges soft),
-    # which hides the tiny facet steps left over from the polyUnite.
+    # Smooth shading so the multi-step side rings read as one
+    # continuous curved surface instead of a stack of visible bands.
     try:
         cmds.polySoftEdge(node, angle=180, ch=False)
     except Exception:
