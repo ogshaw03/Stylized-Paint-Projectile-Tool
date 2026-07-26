@@ -225,50 +225,60 @@ def _create_default_splat_mesh(name: str, base_radius: float = 1.0,
 # Orientation helpers
 # --------------------------------------------------------------------------- #
 
-def _orient_transform_to_normal(node: str, normal: Vec3) -> None:
-    up = _om.MVector(0.0, 1.0, 0.0)
-    target = _om.MVector(float(normal[0]), float(normal[1]),
-                         float(normal[2])).normal()
-    quat = _om.MQuaternion(up, target)
-    euler = quat.asEulerRotation()
+def _orient_splat(node: str, normal: Vec3,
+                  tangent_world: Optional[Vec3] = None) -> None:
+    """Set the splat's world rotation so its local basis matches the
+    surface frame in one shot, avoiding the numerical drift and
+    quaternion-axis ambiguity of a two-step orient-then-rotate:
+
+        local +Y  =  normal
+        local +X  =  tangent (projected perpendicular to normal)
+        local +Z  =  normal × tangent          (right-handed complement)
+
+    When ``tangent_world`` is None or degenerate we pick any world
+    vector perpendicular to normal so the frame is still well-defined
+    — orientation is arbitrary around normal in that case (rotation
+    jitter takes over after this).
+    """
+    n = _om.MVector(float(normal[0]), float(normal[1]),
+                    float(normal[2])).normal()
+
+    if tangent_world is not None:
+        t = _om.MVector(float(tangent_world[0]),
+                        float(tangent_world[1]),
+                        float(tangent_world[2]))
+        # Project out any component parallel to the normal — the
+        # tangent must lie in the surface plane.
+        t = t - n * (t * n)
+        if t.length() < 1e-6:
+            t = None
+        else:
+            t = t.normal()
+    else:
+        t = None
+
+    if t is None:
+        # Pick an arbitrary perpendicular. Choosing world +X when it's
+        # not near-parallel to the normal, otherwise world +Z.
+        seed = _om.MVector(1.0, 0.0, 0.0) if abs(n.x) < 0.9 \
+            else _om.MVector(0.0, 0.0, 1.0)
+        t = (seed - n * (seed * n)).normal()
+
+    z = (n ^ t).normal()   # normal × tangent = binormal (local +Z)
+
+    # Maya's MMatrix layout — each "row" is a basis vector in world.
+    mat = _om.MMatrix((
+        t.x, t.y, t.z, 0.0,
+        n.x, n.y, n.z, 0.0,
+        z.x, z.y, z.z, 0.0,
+        0.0, 0.0, 0.0, 1.0,
+    ))
+    euler = _om.MTransformationMatrix(mat).rotation()
     cmds.xform(node, ws=True, ro=(
         math.degrees(euler.x),
         math.degrees(euler.y),
         math.degrees(euler.z),
     ))
-
-
-def _align_local_x_to_tangent(node: str, normal: Vec3, tangent_world: Vec3) -> None:
-    """After ``_orient_transform_to_normal`` has aligned local +Y to the
-    normal, rotate the node around that same axis so local +X points
-    along ``tangent_world`` projected into the surface plane."""
-    n_vec = _om.MVector(*normal).normal()
-    t_vec = _om.MVector(*tangent_world)
-    # Project out any component along the normal (should already be
-    # perpendicular, but be safe).
-    t_vec = t_vec - n_vec * (t_vec * n_vec)
-    if t_vec.length() < 1e-6:
-        return
-    t_vec = t_vec.normal()
-
-    # Current world-space direction of local +X on the node.
-    sel = _om.MSelectionList()
-    sel.add(node)
-    dag = sel.getDagPath(0)
-    world_mat = dag.inclusiveMatrix()
-    # MMatrix indexing: (row, column). Local axis vectors are rows 0..2.
-    local_x_world = _om.MVector(world_mat.getElement(0, 0),
-                                world_mat.getElement(0, 1),
-                                world_mat.getElement(0, 2)).normal()
-
-    # Signed angle from local_x_world to t_vec around n_vec.
-    cross = local_x_world ^ t_vec
-    sin_a = cross * n_vec
-    cos_a = local_x_world * t_vec
-    angle = math.atan2(sin_a, cos_a)
-    if abs(angle) < 1e-4:
-        return
-    cmds.rotate(0.0, math.degrees(angle), 0.0, node, r=True, os=True)
 
 
 # --------------------------------------------------------------------------- #
@@ -359,10 +369,8 @@ def create_splat(
         pos_z += (tz / t_len) * forward_offset
     cmds.xform(splat, ws=True, t=(pos_x, pos_y, pos_z))
 
-    _orient_transform_to_normal(splat, (nx, ny, nz))
+    _orient_splat(splat, (nx, ny, nz), tangent_direction)
 
-    if tangent_direction is not None:
-        _align_local_x_to_tangent(splat, (nx, ny, nz), tangent_direction)
     if rotation_jitter_degrees > 0.0:
         jitter = random.uniform(-rotation_jitter_degrees,
                                 rotation_jitter_degrees)
