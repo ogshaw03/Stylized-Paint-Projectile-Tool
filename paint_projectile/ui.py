@@ -15,6 +15,11 @@ from typing import Optional
 from . import __version__ as _pkg_version
 from . import system as _system
 
+_INSTALL_URL = (
+    "https://raw.githubusercontent.com/ogshaw03/Stylized-Paint-Projectile-Tool/"
+    "main/install.py"
+)
+
 try:
     from maya import cmds  # type: ignore
 except ImportError:  # pragma: no cover
@@ -72,6 +77,44 @@ def _on_generate(fields):
         pos="topCenter",
         fade=True,
     )
+
+
+def _update_from_github(*_args) -> None:
+    """Fetch install.py from GitHub and run it inline. This bypasses the
+    drag-and-drop-caching issue where Maya won't re-run install.py in
+    the same session."""
+    import time
+    import urllib.request
+
+    url = f"{_INSTALL_URL}?_={time.time()}"
+    print(f"[paint_projectile] update: fetching {url}")
+    try:
+        source = urllib.request.urlopen(url, timeout=30).read()
+    except Exception as exc:
+        cmds.confirmDialog(
+            title="Update failed",
+            message=f"Could not fetch install.py:\n{exc}",
+            button=["OK"],
+        )
+        return
+
+    ns = {"__name__": "install", "__file__": "<github>"}
+    # exec install.py — its module-level auto-run will call install()
+    # which overwrites files, refreshes the shelf button, and shows a
+    # confirmation dialog with the version delta.
+    exec(compile(source, "install.py (from GitHub)", "exec"), ns)
+
+    # Close and re-open ourselves so the new version's UI is what the
+    # user sees.
+    if cmds.window(WINDOW, exists=True):
+        cmds.deleteUI(WINDOW)
+    import sys
+    for m in [k for k in list(sys.modules)
+              if k == "paint_projectile" or k.startswith("paint_projectile.")
+              or k == "paint_projectile_launch"]:
+        sys.modules.pop(m, None)
+    import paint_projectile_launch
+    paint_projectile_launch.show()
 
 
 def show() -> str:
@@ -138,11 +181,17 @@ def show() -> str:
         al="left")
 
     cmds.separator(h=8, style="in")
-    cmds.rowLayout(nc=2, adj=1)
+    cmds.rowLayout(nc=3, adj=1,
+                   cw3=(1, 200, 130))
     cmds.text(l="", al="left")   # left spacer stretches
     cmds.text(l=f"paint_projectile  v{_pkg_version}",
               al="right", fn="smallObliqueLabelFont",
-              annotation="Installed package version. Re-drag install.py to update.")
+              annotation="Installed package version.")
+    cmds.button(l="Update from GitHub",
+                h=22,
+                annotation=("Fetch install.py from GitHub, reinstall, "
+                            "and reopen this window with the new version."),
+                c=_update_from_github)
     cmds.setParent("..")
 
     cmds.showWindow(win)
