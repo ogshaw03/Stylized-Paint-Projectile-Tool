@@ -605,7 +605,11 @@ def _do_live_preview(fields) -> None:
     global _preview_pending
     _preview_pending = False
     try:
-        _rebuild_3d_preview(fields)
+        # Slider-driven rebuilds: don't grab the camera or the
+        # selection — the animator is looking at the preview
+        # deliberately and doesn't want the viewport pulling itself
+        # around every time a value changes.
+        _rebuild_3d_preview(fields, frame_view=False, keep_selection=True)
     except Exception as exc:
         import traceback
         print(f"[paint_projectile] preview rebuild failed: {exc}")
@@ -616,8 +620,20 @@ def _clear_3d_preview(*_) -> None:
     _preview.clear_preview()
 
 
-def _rebuild_3d_preview(fields) -> None:
-    """Read the current UI values and hand them to preview.rebuild()."""
+def _rebuild_3d_preview(fields, frame_view: bool = True,
+                        keep_selection: bool = False) -> None:
+    """Read the current UI values and hand them to preview.rebuild().
+
+    ``frame_view`` — call viewFit on the preview group afterwards so
+    the animator can find it. Only set True for explicit clicks of the
+    "今すぐ再構築" button; slider-driven rebuilds should leave the
+    camera alone.
+
+    ``keep_selection`` — preserve the pre-rebuild selection instead of
+    selecting the preview group. Again, sliders should not steal the
+    animator's selection.
+    """
+    prev_selection = cmds.ls(sl=True, l=False) if keep_selection else None
     mesh = cmds.textFieldButtonGrp(fields["mesh"], q=True, text=True).strip()
     start_node = cmds.textFieldButtonGrp(fields["start"], q=True, text=True).strip()
     target_node = cmds.textFieldButtonGrp(fields["target"], q=True, text=True).strip()
@@ -681,19 +697,25 @@ def _rebuild_3d_preview(fields) -> None:
     )
 
     if grp and cmds.objExists(grp):
-        # Frame the preview group in the active viewport so the user
-        # doesn't have to hunt for it, and select the group so its
-        # bounds are highlighted.
-        try:
-            cmds.select(grp, r=True)
-            cmds.viewFit(grp, all=False, animate=False)
-        except Exception:
-            pass
-        cmds.inViewMessage(
-            amg=(f"<hl>プレビュー更新</hl>: "
-                 f"'{_preview.PREVIEW_GROUP_NAME}' 以下に配置しました。"
-                 "  ▶ Space で再生 → 実速度で確認。"),
-            pos="topCenter", fade=True, alpha=0.9)
+        if frame_view:
+            try:
+                cmds.select(grp, r=True)
+                cmds.viewFit(grp, all=False, animate=False)
+            except Exception:
+                pass
+            cmds.inViewMessage(
+                amg=(f"<hl>プレビュー更新</hl>: "
+                     f"'{_preview.PREVIEW_GROUP_NAME}' 以下に配置しました。"
+                     "  ▶ Space で再生 → 実速度で確認。"),
+                pos="topCenter", fade=True, alpha=0.9)
+        if keep_selection and prev_selection is not None:
+            try:
+                if prev_selection:
+                    cmds.select(prev_selection, r=True)
+                else:
+                    cmds.select(cl=True)
+            except Exception:
+                pass
 
 
 def _reroll_shape_seed(fields) -> None:
