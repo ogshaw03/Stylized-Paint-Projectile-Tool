@@ -15,10 +15,40 @@ from typing import Optional
 from . import __version__ as _pkg_version
 from . import system as _system
 
-_INSTALL_URL = (
-    "https://raw.githubusercontent.com/ogshaw03/Stylized-Paint-Projectile-Tool/"
-    "main/install.py"
-)
+_GITHUB_OWNER = "ogshaw03"
+_GITHUB_REPO = "Stylized-Paint-Projectile-Tool"
+_GITHUB_BRANCH = "main"
+_GITHUB_API = f"https://api.github.com/repos/{_GITHUB_OWNER}/{_GITHUB_REPO}"
+_GITHUB_RAW_BASE = f"https://raw.githubusercontent.com/{_GITHUB_OWNER}/{_GITHUB_REPO}"
+
+
+def _resolve_latest_sha_ui() -> str:
+    """Look up the current tip commit of the default branch via the
+    GitHub API. Returns the SHA, or the branch name if the API is
+    unreachable (that path still hits the CDN-cached copy, which is
+    what we're trying to avoid — but at least the tool tries)."""
+    import json
+    import random
+    import time
+    import urllib.request
+
+    salt = f"{time.time():.6f}_{random.randint(0, 2 ** 32)}"
+    req = urllib.request.Request(
+        f"{_GITHUB_API}/branches/{_GITHUB_BRANCH}?_={salt}",
+        headers={
+            "Accept": "application/vnd.github+json",
+            "Cache-Control": "no-cache",
+            "User-Agent": f"paint_projectile-updater/{salt}",
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            payload = json.loads(resp.read().decode("utf-8"))
+        return payload["commit"]["sha"]
+    except Exception as exc:
+        print(f"[paint_projectile] SHA lookup failed ({exc}); "
+              f"falling back to {_GITHUB_BRANCH}")
+        return _GITHUB_BRANCH
 
 try:
     from maya import cmds  # type: ignore
@@ -83,23 +113,21 @@ def _update_from_github(*_args) -> None:
     """Fetch install.py from GitHub and run it inline. This bypasses the
     drag-and-drop-caching issue where Maya won't re-run install.py in
     the same session."""
-    import random
     import sys
-    import time
     import traceback
     import urllib.request
 
-    # High-entropy cache-buster + no-cache headers so no proxy or edge
-    # cache can hand us back a stale install.py.
-    salt = f"{time.time():.6f}_{random.randint(0, 2 ** 32)}"
-    url = f"{_INSTALL_URL}?_={salt}"
+    # raw.githubusercontent.com's CDN keys its cache on the path only —
+    # ?_=<salt> does NOT bust it. Resolve the current commit SHA via
+    # the GitHub API and hit the SHA-scoped raw URL, which is immutable
+    # per SHA and therefore never cache-stale for a new commit.
+    sha = _resolve_latest_sha_ui()
+    url = f"{_GITHUB_RAW_BASE}/{sha}/install.py"
     print(f"[paint_projectile] update: fetching {url}")
     try:
         req = urllib.request.Request(url, headers={
-            "Cache-Control": "no-cache, no-store, must-revalidate",
-            "Pragma": "no-cache",
-            "Expires": "0",
-            "User-Agent": f"paint_projectile-updater/{salt}",
+            "Cache-Control": "no-cache",
+            "User-Agent": f"paint_projectile-updater/{sha[:10]}",
         })
         source = urllib.request.urlopen(req, timeout=30).read()
     except Exception as exc:
