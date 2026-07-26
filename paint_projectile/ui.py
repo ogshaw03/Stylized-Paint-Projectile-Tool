@@ -621,12 +621,36 @@ def _rebuild_3d_preview(fields) -> None:
     mesh = cmds.textFieldButtonGrp(fields["mesh"], q=True, text=True).strip()
     start_node = cmds.textFieldButtonGrp(fields["start"], q=True, text=True).strip()
     target_node = cmds.textFieldButtonGrp(fields["target"], q=True, text=True).strip()
+
+    # Give the animator explicit feedback when the setup is incomplete
+    # — the previous behavior of silently returning made it look like
+    # the preview was broken.
+    missing = []
+    if not mesh:
+        missing.append("メッシュ")
+    elif not cmds.objExists(mesh):
+        missing.append(f"メッシュ '{mesh}' (シーンに存在しない)")
+    if not start_node:
+        missing.append("発射位置")
+    elif not cmds.objExists(start_node):
+        missing.append(f"発射位置 '{start_node}' (シーンに存在しない)")
+    if not target_node:
+        missing.append("ターゲット")
+    elif not cmds.objExists(target_node):
+        missing.append(f"ターゲット '{target_node}' (シーンに存在しない)")
+    if missing:
+        cmds.inViewMessage(
+            amg=(f"<hl>ライブプレビュー未構築</hl>: 未設定 → "
+                 + " / ".join(missing)),
+            pos="midCenter", fade=True, alpha=0.9)
+        return
+
     colliders = _parse_csv(cmds.textFieldButtonGrp(
         fields["colliders"], q=True, text=True))
     splat_templates = _parse_csv(cmds.textFieldButtonGrp(
         fields["splatTemplates"], q=True, text=True))
 
-    _preview.rebuild(
+    grp = _preview.rebuild(
         mesh=mesh,
         start_node=start_node,
         target_node=target_node,
@@ -655,6 +679,21 @@ def _rebuild_3d_preview(fields) -> None:
             fields["squashFrames"], q=True, v=True)),
         shape_seed=int(cmds.intField(fields["shapeSeed"], q=True, v=True)),
     )
+
+    if grp and cmds.objExists(grp):
+        # Frame the preview group in the active viewport so the user
+        # doesn't have to hunt for it, and select the group so its
+        # bounds are highlighted.
+        try:
+            cmds.select(grp, r=True)
+            cmds.viewFit(grp, all=False, animate=False)
+        except Exception:
+            pass
+        cmds.inViewMessage(
+            amg=(f"<hl>プレビュー更新</hl>: "
+                 f"'{_preview.PREVIEW_GROUP_NAME}' 以下に配置しました。"
+                 "  ▶ Space で再生 → 実速度で確認。"),
+            pos="topCenter", fade=True, alpha=0.9)
 
 
 def _reroll_shape_seed(fields) -> None:
@@ -811,7 +850,37 @@ def show() -> str:
     )
 
     cmds.showWindow(win)
+
+    # If the animator opened the tool on a scene that already has the
+    # start / target locators + mesh set up (e.g. re-opening after a
+    # save), pre-populate the pickers from the current selection and
+    # kick off the first live preview so they see something
+    # immediately.
+    cmds.evalDeferred(lambda: _try_auto_populate_and_preview(fields),
+                      lowestPriority=True)
+
     return win
+
+
+def _try_auto_populate_and_preview(fields) -> None:
+    """Best-effort: if a mesh + start + target exist in the scene under
+    common names (or the user has 3 things selected), fill the pickers
+    and build the preview. Otherwise just log a short hint."""
+    try:
+        sel = cmds.ls(sl=True, l=False) or []
+        if len(sel) >= 3:
+            # Assume selection order: mesh, start, target.
+            mesh, start, target = sel[0], sel[1], sel[2]
+            if cmds.listRelatives(mesh, ad=True, s=True, type="mesh"):
+                cmds.textFieldButtonGrp(fields["mesh"], e=True, text=mesh)
+                cmds.textFieldButtonGrp(fields["start"], e=True, text=start)
+                cmds.textFieldButtonGrp(fields["target"], e=True, text=target)
+        # Attempt a rebuild — _rebuild_3d_preview shows a helpful
+        # in-view message if setup is incomplete, so the animator
+        # always gets feedback about what to do next.
+        _rebuild_3d_preview(fields)
+    except Exception:
+        pass
 
 
 # --------------------------------------------------------------------------- #
