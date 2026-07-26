@@ -225,8 +225,8 @@ def _compute_preview_scene(fields) -> dict:
 
     speed = cmds.floatSliderGrp(fields["speed"], q=True, v=True)
     gravity = cmds.floatSliderGrp(fields["gravity"], q=True, v=True)
-    start_frame = int(cmds.intFieldGrp(fields["startFrame"], q=True, v1=True))
-    end_frame = int(cmds.intFieldGrp(fields["endFrame"], q=True, v1=True))
+    start_frame = int(cmds.intField(fields["startFrame"], q=True, v=True))
+    end_frame = int(cmds.intField(fields["endFrame"], q=True, v=True))
     if end_frame < start_frame:
         end_frame = start_frame + 1
     num_frames = end_frame - start_frame + 1
@@ -632,8 +632,8 @@ def _rebuild_3d_preview(fields) -> None:
         target_node=target_node,
         speed=cmds.floatSliderGrp(fields["speed"], q=True, v=True),
         gravity=cmds.floatSliderGrp(fields["gravity"], q=True, v=True),
-        start_frame=int(cmds.intFieldGrp(fields["startFrame"], q=True, v1=True)),
-        end_frame=int(cmds.intFieldGrp(fields["endFrame"], q=True, v1=True)),
+        start_frame=int(cmds.intField(fields["startFrame"], q=True, v=True)),
+        end_frame=int(cmds.intField(fields["endFrame"], q=True, v=True)),
         collision_meshes=colliders or None,
         splat_templates=splat_templates or None,
         splat_scale=cmds.floatSliderGrp(fields["splatScale"], q=True, v=True),
@@ -651,17 +651,17 @@ def _rebuild_3d_preview(fields) -> None:
             fields["splatForwardBias"], q=True, v=True),
         splat_thickness=cmds.floatSliderGrp(
             fields["splatThickness"], q=True, v=True),
-        impact_squash_frames=int(cmds.intFieldGrp(
-            fields["squashFrames"], q=True, v1=True)),
-        shape_seed=int(cmds.intFieldGrp(fields["shapeSeed"], q=True, v1=True)),
+        impact_squash_frames=int(cmds.intField(
+            fields["squashFrames"], q=True, v=True)),
+        shape_seed=int(cmds.intField(fields["shapeSeed"], q=True, v=True)),
     )
 
 
 def _reroll_shape_seed(fields) -> None:
     """Increment the shape seed field by 1 to get a fresh random shape
     while keeping every other slider's value fixed."""
-    current = int(cmds.intFieldGrp(fields["shapeSeed"], q=True, v1=True))
-    cmds.intFieldGrp(fields["shapeSeed"], e=True, v1=current + 1)
+    current = int(cmds.intField(fields["shapeSeed"], q=True, v=True))
+    cmds.intField(fields["shapeSeed"], e=True, v=current + 1)
     _schedule_live_preview(fields)
 
 
@@ -681,9 +681,9 @@ def _on_generate(fields):
 
     speed = cmds.floatSliderGrp(fields["speed"], q=True, v=True)
     gravity = cmds.floatSliderGrp(fields["gravity"], q=True, v=True)
-    start_frame = int(cmds.intFieldGrp(fields["startFrame"], q=True, v1=True))
-    end_frame = int(cmds.intFieldGrp(fields["endFrame"], q=True, v1=True))
-    name = cmds.textFieldGrp(fields["name"], q=True, text=True).strip() or "paintBall"
+    start_frame = int(cmds.intField(fields["startFrame"], q=True, v=True))
+    end_frame = int(cmds.intField(fields["endFrame"], q=True, v=True))
+    name = cmds.textField(fields["name"], q=True, tx=True).strip() or "paintBall"
 
     colliders = _parse_csv(cmds.textFieldButtonGrp(
         fields["colliders"], q=True, text=True))
@@ -699,8 +699,8 @@ def _on_generate(fields):
     splat_jitter = cmds.floatSliderGrp(fields["splatJitter"], q=True, v=True)
     splat_thickness = cmds.floatSliderGrp(fields["splatThickness"],
                                            q=True, v=True)
-    shape_seed = int(cmds.intFieldGrp(fields["shapeSeed"], q=True, v1=True))
-    squash_frames = int(cmds.intFieldGrp(fields["squashFrames"], q=True, v1=True))
+    shape_seed = int(cmds.intField(fields["shapeSeed"], q=True, v=True))
+    squash_frames = int(cmds.intField(fields["squashFrames"], q=True, v=True))
 
     result = _system.create_projectile_system(
         mesh=mesh,
@@ -751,8 +751,24 @@ def _on_generate(fields):
 # Window
 # --------------------------------------------------------------------------- #
 
+def _play_toggle(*_) -> None:
+    cmds.play(state=not cmds.play(q=True, state=True), forward=True)
+
+
 def show() -> str:
-    """ツールウィンドウを開く / 開き直す。"""
+    """ツールウィンドウを開く / 開き直す。
+
+    EmberGen 風レイアウト:
+
+        ┌── 🎯 セットアップ (常時表示) ─────────────┐
+        │ Mesh / Start / Target / Camera             │
+        ├── タブ (弾道 / 着弾 / スプラット / 詳細) ─┤
+        │  (選択タブのパラメータ)                    │
+        ├── 🔄 プレビュー アクション バー (常時) ───┤
+        │ [ 再構築 ] [ 削除 ] [ ▶ 再生 ]              │
+        ├── ▶ GENERATE (大きなボタン) ──────────────┤
+        └── バージョン + GitHub 更新 ────────────────┘
+    """
     if cmds is None:
         raise RuntimeError("show() must be called inside Maya.")
 
@@ -761,196 +777,261 @@ def show() -> str:
 
     win = cmds.window(
         WINDOW,
-        t=f"Stylized Projectile FX (プロトタイプ)  —  v{_pkg_version}",
-        w=880, mnb=True, mxb=False, s=True,
+        t=f"Paint Projectile FX  —  v{_pkg_version}",
+        w=520, h=760, mnb=True, mxb=False, s=True,
     )
 
-    outer = cmds.formLayout()
-    left = cmds.columnLayout(adj=True, rs=4, cat=("both", 8), w=440)
     fields = {}
-
-    # ---- PROJECTILE (投射体) ----
-    cmds.frameLayout(l="投射体", cll=False, mh=6, mw=6)
-    cmds.columnLayout(adj=True, rs=4)
-    fields["mesh"] = cmds.textFieldButtonGrp(
-        l="メッシュ", bl="選択を設定",
-        bc=lambda *_: _pick_single(fields["mesh"], "mesh", fields),
-        cw=[(1, 70), (2, 220), (3, 100)])
-    fields["start"] = cmds.textFieldButtonGrp(
-        l="発射位置", bl="選択を設定",
-        bc=lambda *_: _pick_single(fields["start"], fields=fields),
-        cw=[(1, 70), (2, 220), (3, 100)])
-    fields["target"] = cmds.textFieldButtonGrp(
-        l="ターゲット", bl="選択を設定",
-        bc=lambda *_: _pick_single(fields["target"], fields=fields),
-        cw=[(1, 70), (2, 220), (3, 100)])
-    fields["cam"] = cmds.textFieldButtonGrp(
-        l="カメラ", bl="選択を設定",
-        bc=lambda *_: _pick_single(fields["cam"], fields=fields),
-        cw=[(1, 70), (2, 220), (3, 100)])
-    cmds.setParent("..")
-    cmds.setParent("..")
-
-    # ---- MOTION (弾道) ----
-    cmds.frameLayout(l="弾道", cll=False, mh=6, mw=6)
-    cmds.columnLayout(adj=True, rs=4)
     live = lambda *_: _schedule_live_preview(fields)
+
+    # Root vertical stack — every row has a fixed purpose so the user
+    # always knows where to look for a given control.
+    root = cmds.formLayout()
+    setup_frame = _build_setup_bar(fields)
+    tabs = _build_parameter_tabs(fields, live)
+    preview_bar = _build_preview_bar(fields)
+    generate_bar = _build_generate_bar(fields)
+    footer = _build_footer_bar()
+
+    cmds.formLayout(
+        root, e=True,
+        attachForm=[
+            (setup_frame, "top", 4), (setup_frame, "left", 4), (setup_frame, "right", 4),
+            (preview_bar, "left", 4), (preview_bar, "right", 4),
+            (generate_bar, "left", 4), (generate_bar, "right", 4),
+            (footer, "left", 4), (footer, "right", 4), (footer, "bottom", 4),
+            (tabs, "left", 4), (tabs, "right", 4),
+        ],
+        attachControl=[
+            (tabs, "top", 4, setup_frame),
+            (tabs, "bottom", 4, preview_bar),
+            (preview_bar, "bottom", 4, generate_bar),
+            (generate_bar, "bottom", 4, footer),
+        ],
+    )
+
+    cmds.showWindow(win)
+    return win
+
+
+# --------------------------------------------------------------------------- #
+# Layout builders — each returns the outer control it produced so show()
+# can wire them up in the form. Keeping them separated makes it obvious
+# from show() what each region of the window is for.
+# --------------------------------------------------------------------------- #
+
+def _build_setup_bar(fields) -> str:
+    """Row 1 — Setup, always visible. Just the four pickers, compact."""
+    frame = cmds.frameLayout(l="🎯 セットアップ (投射体)", cll=False,
+                             mh=6, mw=6, bgc=(0.22, 0.22, 0.26))
+    cmds.columnLayout(adj=True, rs=3)
+    _picker = lambda key, label, filt=None: cmds.textFieldButtonGrp(
+        l=label, bl="選択", ad3=2,
+        bc=lambda *_: _pick_single(fields[key], filt, fields),
+        cw3=(74, 260, 60))
+    fields["mesh"]   = _picker("mesh",   "メッシュ",     "mesh")
+    fields["start"]  = _picker("start",  "発射位置")
+    fields["target"] = _picker("target", "ターゲット")
+    fields["cam"]    = _picker("cam",    "カメラ")
+    cmds.setParent("..")
+    cmds.setParent("..")
+    return frame
+
+
+def _build_parameter_tabs(fields, live) -> str:
+    """Row 2 — Tabs. Each tab holds one focused set of controls."""
+    tab_layout = cmds.tabLayout(innerMarginWidth=6, innerMarginHeight=6,
+                                sti=1)
+    ballistics = _build_tab_ballistics(fields, live)
+    impact = _build_tab_impact(fields, live)
+    splat = _build_tab_splat(fields, live)
+    misc = _build_tab_misc(fields, live)
+    cmds.tabLayout(tab_layout, e=True,
+                   tabLabel=[(ballistics, "🚀 弾道"),
+                             (impact, "💥 衝突・着弾"),
+                             (splat, "🎨 スプラット"),
+                             (misc, "⚙ 詳細")])
+    cmds.setParent("..")
+    return tab_layout
+
+
+def _build_tab_ballistics(fields, live) -> str:
+    col = cmds.columnLayout(adj=True, rs=6, cat=("both", 6))
     fields["speed"] = cmds.floatSliderGrp(
         l="初速", f=True, min=0.0, max=200.0, fmn=0.0, fmx=1000.0,
         v=20.0, pre=2, dc=live, cc=live,
+        cw=[(1, 90), (2, 60)], cal=[(1, "right")],
         ann="発射時の初速 (シーン単位/秒)")
     fields["gravity"] = cmds.floatSliderGrp(
         l="重力", f=True, min=0.0, max=50.0, fmn=0.0, fmx=200.0,
         v=9.8, pre=2, dc=live, cc=live,
+        cw=[(1, 90), (2, 60)], cal=[(1, "right")],
         ann="重力加速度 (-Y 方向)")
-    fields["startFrame"] = cmds.intFieldGrp(
-        l="開始フレーム", nf=1,
-        v1=int(cmds.playbackOptions(q=True, min=True)), cc=live)
-    fields["endFrame"] = cmds.intFieldGrp(
-        l="終了フレーム", nf=1,
-        v1=int(cmds.playbackOptions(q=True, max=True)), cc=live)
-    fields["name"] = cmds.textFieldGrp(l="名前", tx="paintBall")
+    cmds.separator(h=6, style="in")
+    cmds.rowLayout(nc=4, cw4=(90, 90, 90, 90), cal=[(1, "right"), (3, "right")])
+    cmds.text(l="開始フレーム:")
+    fields["startFrame"] = cmds.intField(
+        v=int(cmds.playbackOptions(q=True, min=True)), cc=live, w=80)
+    cmds.text(l="終了フレーム:")
+    fields["endFrame"] = cmds.intField(
+        v=int(cmds.playbackOptions(q=True, max=True)), cc=live, w=80)
+    cmds.setParent("..")
+    cmds.rowLayout(nc=2, cw2=(90, 260), cal=[(1, "right")])
+    cmds.text(l="名前:")
+    fields["name"] = cmds.textField(tx="paintBall", w=260)
     cmds.setParent("..")
     cmds.setParent("..")
+    return col
 
-    # ---- COLLISION (衝突) ----
-    cmds.frameLayout(l="衝突判定", cll=True, cl=False, mh=6, mw=6)
-    cmds.columnLayout(adj=True, rs=4)
+
+def _build_tab_impact(fields, live) -> str:
+    col = cmds.columnLayout(adj=True, rs=6, cat=("both", 6))
+    cmds.text(l="コライダ (軌道と交差判定するメッシュ)", al="left",
+              fn="boldLabelFont")
     fields["colliders"] = cmds.textFieldButtonGrp(
-        l="コライダ", bl="選択を追加",
-        ann=("軌道と交差判定するメッシュ。カンマ区切りで複数可。"),
+        l="", bl="選択を追加",
+        ad3=2, cw3=(4, 300, 100),
         bc=lambda *_: _pick_multi(fields["colliders"], "mesh", fields),
-        cw=[(1, 70), (2, 220), (3, 100)])
+        ann="複数可、カンマ区切り")
     cmds.button(l="コライダをクリア", h=22,
                 c=lambda *_: _clear_field(fields["colliders"], fields))
+    cmds.separator(h=8, style="in")
+    cmds.text(l="着弾アニメーション", al="left", fn="boldLabelFont")
+    cmds.rowLayout(nc=2, cw2=(160, 100), cal=[(1, "right")])
+    cmds.text(l="スカッシュ フレーム数:")
+    fields["squashFrames"] = cmds.intField(v=1, cc=live, w=80,
+                                            ann="着弾後、弾が潰れて消えるまでのフレーム数")
     cmds.setParent("..")
     cmds.setParent("..")
+    return col
 
-    # ---- IMPACT (着弾) ----
-    cmds.frameLayout(l="着弾アニメーション", cll=True, cl=False, mh=6, mw=6)
-    cmds.columnLayout(adj=True, rs=4)
-    fields["squashFrames"] = cmds.intFieldGrp(
-        l="スカッシュフレーム", nf=1, v1=1, cc=live,
-        ann="着弾後、弾が潰れて消えるまでのフレーム数")
-    cmds.setParent("..")
-    cmds.setParent("..")
 
-    # ---- SPLAT ----
-    cmds.frameLayout(l="スプラット", cll=True, cl=False, mh=6, mw=6)
-    cmds.columnLayout(adj=True, rs=4)
+def _build_tab_splat(fields, live) -> str:
+    col = cmds.columnLayout(adj=True, rs=5, cat=("both", 6))
+
+    cmds.text(l="テンプレート (省略でデフォルト水しぶき形状)",
+              al="left", fn="boldLabelFont")
     fields["splatTemplates"] = cmds.textFieldButtonGrp(
-        l="テンプレート", bl="選択を追加",
-        ann=("任意のスプラット形状メッシュ (複数可、ランダム選択)。"
-             "空欄でデフォルトの水しぶき形状を生成。"),
+        l="", bl="選択を追加", ad3=2, cw3=(4, 300, 100),
         bc=lambda *_: _pick_multi(fields["splatTemplates"], "mesh", fields),
-        cw=[(1, 70), (2, 220), (3, 100)])
+        ann="複数指定でランダム選択")
     cmds.button(l="テンプレートをクリア", h=22,
                 c=lambda *_: _clear_field(fields["splatTemplates"], fields))
-    fields["splatScale"] = cmds.floatSliderGrp(
-        l="サイズ (弾比)", f=True, min=0.5, max=10.0, fmn=0.0, fmx=1000.0,
-        v=3.0, pre=2, dc=live, cc=live,
-        ann="弾の bounding radius を 1 とした倍率")
-    fields["splatOffset"] = cmds.floatSliderGrp(
-        l="面オフセット", f=True, min=0.0, max=1.0, fmn=0.0, fmx=100.0,
-        v=0.01, pre=3, dc=live, cc=live,
-        ann="Z-fight 防止のため面の法線方向にずらす距離")
-    fields["splatGrow"] = cmds.intFieldGrp(
-        l="拡がりフレーム", nf=1, v1=2, cc=live,
-        ann="0 → 満スケールに拡がるまでのフレーム数")
-    fields["splatStretch"] = cmds.floatSliderGrp(
-        l="Grazing 伸び", f=True, min=1.0, max=3.0, fmn=1.0, fmx=10.0,
-        v=1.8, pre=2, dc=live, cc=live,
-        ann="完全 grazing 時の進行方向スケール")
-    fields["splatSqueeze"] = cmds.floatSliderGrp(
-        l="Grazing 潰れ", f=True, min=0.1, max=1.0, fmn=0.0, fmx=1.0,
-        v=0.55, pre=2, dc=live, cc=live,
-        ann="完全 grazing 時の直交方向スケール")
-    fields["splatForwardBias"] = cmds.floatSliderGrp(
-        l="前方バイアス", f=True, min=0.0, max=1.0, fmn=0.0, fmx=1.0,
-        v=1.0, pre=2, dc=live, cc=live,
-        ann=("着弾点をスプラット後端にずらす度合。1.0 で完全に前方"
-             "だけに広がる (彗星型)。"))
-    fields["splatJitter"] = cmds.floatSliderGrp(
-        l="回転ジッタ", f=True, min=0.0, max=90.0, fmn=0.0, fmx=180.0,
-        v=12.0, pre=1, dc=live, cc=live,
-        ann="面 Normal 周りのランダム回転度")
-    fields["splatThickness"] = cmds.floatSliderGrp(
-        l="厚み", f=True, min=0.0, max=0.5, fmn=0.0, fmx=2.0,
-        v=0.08, pre=3, dc=live, cc=live,
-        ann=("押し出し深さ (base radius 比)。0 で平面、0.08 で薄塗り。"))
-    fields["shapeSeed"] = cmds.intFieldGrp(
-        l="シード", nf=1, v1=0, cc=live,
-        ann=("スプラット形状の乱数シード。同じシード + 同じ設定なら "
-             "常に同じ形が出る。数値を変えると別の形状バリエーション。"))
-    cmds.button(l="シード リロール (別形状を試す)", h=22,
+
+    cmds.separator(h=8, style="in")
+    cmds.text(l="サイズ / 位置", al="left", fn="boldLabelFont")
+    _slider = lambda key, lbl, mn, mx, v, pre, ann, fmn=None, fmx=None: (
+        cmds.floatSliderGrp(l=lbl, f=True, min=mn, max=mx,
+                            fmn=fmn if fmn is not None else mn,
+                            fmx=fmx if fmx is not None else mx,
+                            v=v, pre=pre, dc=live, cc=live,
+                            cw=[(1, 110), (2, 60)], cal=[(1, "right")],
+                            ann=ann))
+    fields["splatScale"] = _slider("splatScale", "サイズ (弾比)",
+                                    0.5, 10.0, 3.0, 2,
+                                    "弾の bounding radius を 1 とした倍率",
+                                    fmn=0.0, fmx=1000.0)
+    fields["splatOffset"] = _slider("splatOffset", "面オフセット",
+                                     0.0, 1.0, 0.01, 3,
+                                     "Z-fight 防止のため面 Normal 方向にずらす距離",
+                                     fmn=0.0, fmx=100.0)
+    fields["splatThickness"] = _slider("splatThickness", "厚み",
+                                        0.0, 0.5, 0.08, 3,
+                                        "押し出し深さ (base radius 比)",
+                                        fmn=0.0, fmx=2.0)
+
+    cmds.separator(h=8, style="in")
+    cmds.text(l="Grazing (斜め着弾) デフォーム", al="left", fn="boldLabelFont")
+    fields["splatStretch"] = _slider("splatStretch", "伸び (進行方向)",
+                                      1.0, 3.0, 1.8, 2,
+                                      "完全 grazing 時の進行方向スケール",
+                                      fmn=1.0, fmx=10.0)
+    fields["splatSqueeze"] = _slider("splatSqueeze", "潰れ (垂直方向)",
+                                      0.1, 1.0, 0.55, 2,
+                                      "完全 grazing 時の直交方向スケール")
+    fields["splatForwardBias"] = _slider("splatForwardBias", "前方バイアス",
+                                          0.0, 1.0, 1.0, 2,
+                                          "1.0 で着弾点がスプラット後端 (彗星型)")
+
+    cmds.separator(h=8, style="in")
+    cmds.text(l="形状バリエーション", al="left", fn="boldLabelFont")
+    fields["splatJitter"] = _slider("splatJitter", "回転ジッタ (度)",
+                                     0.0, 90.0, 12.0, 1,
+                                     "面 Normal 周りのランダム回転度", fmx=180.0)
+    cmds.rowLayout(nc=3, cw3=(110, 60, 170), cal=[(1, "right")])
+    cmds.text(l="シード:")
+    fields["shapeSeed"] = cmds.intField(v=0, cc=live, w=60,
+                                         ann="乱数シード。同値で常に同形状。")
+    cmds.button(l="🎲 別形状を試す", h=22, w=170,
                 c=lambda *_: _reroll_shape_seed(fields))
     cmds.setParent("..")
-    cmds.setParent("..")
 
-    cmds.separator(h=8, style="none")
-    cmds.button(l="GENERATE", h=36, c=lambda *_: _on_generate(fields),
-                bgc=(0.3, 0.5, 0.35))
-    cmds.separator(h=6, style="none")
+    fields["splatGrow"] = cmds.intFieldGrp(
+        l="拡がりフレーム", nf=1, v1=2, cc=live,
+        cw=[(1, 110), (2, 60)], cal=[(1, "right")],
+        ann="0 → 満スケールに拡がるまでのフレーム数")
+
+    cmds.setParent("..")
+    return col
+
+
+def _build_tab_misc(fields, live) -> str:
+    col = cmds.columnLayout(adj=True, rs=6, cat=("both", 6))
+    cmds.text(l="使い方 (概要)", al="left", fn="boldLabelFont")
     cmds.text(
-        l="生成後: *_CTRL を選択し worldOffset* / cameraOffset* / \n"
-          "trajectoryTime に Key を打って演出。\n"
-          "*_GRP 下の Base curves は凍結済み — 上書きされません。",
+        l=("1. セットアップ タブで Mesh / Start / Target を選択\n"
+           "2. 各パラメータ タブで数値調整 (プレビューがライブ更新)\n"
+           "3. タイムライン スペースキーで実速度再生を確認\n"
+           "4. 満足したら GENERATE ボタンでシーンにコミット\n\n"
+           "生成後: *_CTRL を選択し worldOffset* / cameraOffset* /\n"
+           "trajectoryTime に Key を打って演出。\n"
+           "*_GRP 下の Base curves は凍結済み — 上書きされません。"),
         al="left")
     cmds.separator(h=8, style="in")
-    cmds.rowLayout(nc=2, adj=1, cw2=(220, 180))
+    cmds.text(l="ライブプレビュー モジュール", al="left", fn="boldLabelFont")
+    cmds.text(
+        l=(f"プレビュー用オブジェクトは Outliner の\n"
+           f"'{_preview.PREVIEW_GROUP_NAME}' 以下にまとめて配置。\n"
+           f"GENERATE 時に自動削除されます。\n"
+           f"Ctrl+Z で 1 操作としてまとめて undo 可能。"),
+        al="left")
+    cmds.setParent("..")
+    return col
+
+
+def _build_preview_bar(fields) -> str:
+    """Row 3 — Preview action bar. Always visible."""
+    frame = cmds.frameLayout(l="🔄 ライブプレビュー", cll=False,
+                             mh=4, mw=4, bgc=(0.22, 0.26, 0.28))
+    cmds.rowLayout(nc=3, adj=1, cw3=(200, 130, 130))
+    cmds.button(l="今すぐ再構築", h=26,
+                ann="Mesh/Start/Target を切り替えた後などに手動で再構築。",
+                c=lambda *_: _rebuild_3d_preview(fields))
+    cmds.button(l="削除", h=26, bgc=(0.5, 0.3, 0.3),
+                ann="プレビュー用オブジェクトをシーンから削除。",
+                c=lambda *_: _clear_3d_preview())
+    cmds.button(l="▶ 再生 / 停止", h=26, c=_play_toggle,
+                ann="タイムライン (Space と同じ)。実速度で確認。")
+    cmds.setParent("..")
+    cmds.setParent("..")
+    return frame
+
+
+def _build_generate_bar(fields) -> str:
+    """Row 4 — the big commit button, impossible to miss."""
+    col = cmds.columnLayout(adj=True, rs=2)
+    cmds.button(l="▶  GENERATE  —  シーンに最終生成",
+                h=44, bgc=(0.32, 0.60, 0.38),
+                c=lambda *_: _on_generate(fields))
+    cmds.setParent("..")
+    return col
+
+
+def _build_footer_bar() -> str:
+    """Row 5 — version + updater. Small, unobtrusive."""
+    row = cmds.rowLayout(nc=2, adj=1, cw2=(300, 160))
     cmds.text(l=f"paint_projectile  v{_pkg_version}",
               al="left", fn="smallObliqueLabelFont")
     cmds.button(l="GitHub から更新", h=22, c=_update_from_github)
     cmds.setParent("..")
-
-    cmds.setParent("..")   # exit left column
-    left_ctrl = left
-
-    # ---- Right: 3D viewport preview control panel ----
-    right = cmds.columnLayout(adj=True, rs=6, cat=("both", 8), w=340)
-    cmds.frameLayout(l="3D ライブプレビュー", cll=False, mh=6, mw=6)
-    cmds.columnLayout(adj=True, rs=6)
-    cmds.text(l=("スライダーを変更するたび、Maya ビューポート上に\n"
-                 "実際に生成された結果 (弾道 + 弾 + スプラット) を\n"
-                 "再構築します。\n"
-                 "\n"
-                 "・タイムライン スペースキーで再生 → 実際の速度で確認\n"
-                 "・GENERATE で最終シーンにコミット\n"
-                 "・プレビュー用オブジェクトは "
-                 f"'{_preview.PREVIEW_GROUP_NAME}' 以下\n"
-                 "  にまとめて配置され、GENERATE 時に自動削除。"),
-              al="left")
-    cmds.separator(h=6, style="in")
-    cmds.button(l="今すぐプレビュー再構築", h=32,
-                c=lambda *_: _rebuild_3d_preview(fields),
-                ann=("スライダーを触っていなくても手動で再構築します "
-                     "(Mesh/Start/Target を差し替えた後などに)。"))
-    cmds.button(l="プレビュー削除", h=26,
-                c=lambda *_: _clear_3d_preview(),
-                bgc=(0.5, 0.3, 0.3),
-                ann="プレビュー用オブジェクトをシーンから削除。")
-    cmds.separator(h=6, style="in")
-    cmds.button(l="タイムライン 再生 / 停止 (Space)", h=26,
-                c=lambda *_: cmds.play(state=not cmds.play(q=True, state=True),
-                                        forward=True))
-    cmds.setParent("..")
-    cmds.setParent("..")
-    cmds.setParent("..")   # exit right column
-
-    # Attach left / right in the outer form.
-    cmds.formLayout(outer, e=True,
-                    attachForm=[(left_ctrl, "left", 4),
-                                (left_ctrl, "top", 4),
-                                (left_ctrl, "bottom", 4),
-                                (right, "right", 4),
-                                (right, "top", 4),
-                                (right, "bottom", 4)],
-                    attachControl=[(right, "left", 4, left_ctrl)])
-
-    cmds.showWindow(win)
-
-    # Do NOT auto-rebuild on window open — the user has to explicitly
-    # click "今すぐプレビュー再構築" (or move a slider) so we don't
-    # spam the scene with a preview they might not want yet.
-
-    return win
+    return row
