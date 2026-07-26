@@ -252,6 +252,22 @@ Maya の `onMayaDroppedPythonFile` フックは、同一セッション内で同
 
 ---
 
+### 1-10. install.py の `_REMOTE_FILES` に新規モジュールを追加し忘れる
+
+**症状**
+新しい `.py` をパッケージに追加して push、ユーザーが Update を叩くと `ModuleNotFoundError: No module named '<pkg>.<newmodule>'`。
+
+**原因**
+install.py はダウンロード対象ファイルをハードコードした `_REMOTE_FILES` タプルで管理している。パッケージに新規ファイルを追加しても、ここに書かないとダウンロードされない。ローカルの `__init__.py` は新規モジュールを import しようとするが、ディスクには存在しないので失敗する。
+
+**対策**
+新規 `.py` を追加したら、必ず同じ commit で `install.py` の `_REMOTE_FILES` にも追記する。CI があるならインストール後 import 全モジュール可能かの smoke test を通すと確実。
+
+**教訓**
+「配布リストはコードの真実 (package structure) と乖離しやすい」。手動同期を義務にするか、自動列挙 (GitHub API tree walk 等) で解決。
+
+---
+
 ### 1-9. コールバック内から親ウィンドウを消すと再オープン後に UI が出ない
 
 **症状**

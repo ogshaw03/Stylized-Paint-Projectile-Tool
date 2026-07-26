@@ -44,4 +44,4 @@ __all__ = [
     "create_splats_from_candidates",
 ]
 
-__version__ = "0.3.0"
+__version__ = "0.3.1"

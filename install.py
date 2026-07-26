@@ -50,6 +50,9 @@ _GITHUB_RAW_BASE = f"https://raw.githubusercontent.com/{_GITHUB_OWNER}/{_GITHUB_
 _REMOTE_FILES = (
     f"{_PACKAGE}/__init__.py",
     f"{_PACKAGE}/trajectory.py",
+    f"{_PACKAGE}/collision.py",
+    f"{_PACKAGE}/impact.py",
+    f"{_PACKAGE}/splat.py",
     f"{_PACKAGE}/system.py",
     f"{_PACKAGE}/ui.py",
     _LAUNCHER,
