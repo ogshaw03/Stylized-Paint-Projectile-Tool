@@ -840,8 +840,7 @@ def _build_setup_bar(fields) -> str:
 
 def _build_parameter_tabs(fields, live) -> str:
     """Row 2 — Tabs. Each tab holds one focused set of controls."""
-    tab_layout = cmds.tabLayout(innerMarginWidth=6, innerMarginHeight=6,
-                                sti=1)
+    tab_layout = cmds.tabLayout(innerMarginWidth=6, innerMarginHeight=6)
     ballistics = _build_tab_ballistics(fields, live)
     impact = _build_tab_impact(fields, live)
     splat = _build_tab_splat(fields, live)
@@ -850,7 +849,8 @@ def _build_parameter_tabs(fields, live) -> str:
                    tabLabel=[(ballistics, "🚀 弾道"),
                              (impact, "💥 衝突・着弾"),
                              (splat, "🎨 スプラット"),
-                             (misc, "⚙ 詳細")])
+                             (misc, "⚙ 詳細")],
+                   selectTabIndex=1)
     cmds.setParent("..")
     return tab_layout
 
