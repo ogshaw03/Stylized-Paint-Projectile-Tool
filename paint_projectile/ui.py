@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from typing import Optional
 
+from . import __version__ as _pkg_version
 from . import system as _system
 
 try:
@@ -81,8 +82,11 @@ def show() -> str:
     if cmds.window(WINDOW, exists=True):
         cmds.deleteUI(WINDOW)
 
-    win = cmds.window(WINDOW, t="Stylized Projectile FX (Prototype)", w=420,
-                      mnb=True, mxb=False, s=True)
+    win = cmds.window(
+        WINDOW,
+        t=f"Stylized Projectile FX (Prototype)  —  v{_pkg_version}",
+        w=420, mnb=True, mxb=False, s=True,
+    )
     cmds.columnLayout(adj=True, rs=4, cat=("both", 8))
 
     cmds.frameLayout(l="PROJECTILE", cll=False, mh=6, mw=6)
@@ -132,6 +136,14 @@ def show() -> str:
           "cameraOffset* / trajectoryTime to art-direct the shot.\n"
           "Base curves under the *_GRP are frozen — never overwritten.",
         al="left")
+
+    cmds.separator(h=8, style="in")
+    cmds.rowLayout(nc=2, adj=1)
+    cmds.text(l="", al="left")   # left spacer stretches
+    cmds.text(l=f"paint_projectile  v{_pkg_version}",
+              al="right", fn="smallObliqueLabelFont",
+              annotation="Installed package version. Re-drag install.py to update.")
+    cmds.setParent("..")
 
     cmds.showWindow(win)
     return win
