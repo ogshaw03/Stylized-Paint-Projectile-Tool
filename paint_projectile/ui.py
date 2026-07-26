@@ -590,6 +590,97 @@ def _install_qlabel(anchor_name: str, label_name: str, w: int, h: int):
 # single deferred rebuild — no point rebuilding 30 times per second.
 _preview_pending = False
 
+# In-window viewport widgets. Unique global names because Maya's
+# modelPanel lives in its own registry alongside the main workspace
+# panels.
+_EMBEDDED_PANEL = "paintProjectilePreviewPanel"
+_EMBEDDED_CAM = "paintProjectilePreviewCam"
+
+
+def _ensure_preview_camera() -> str:
+    """Get / create the dedicated preview camera. Returns transform."""
+    if not cmds.objExists(_EMBEDDED_CAM):
+        cam_shape = cmds.camera(n=_EMBEDDED_CAM)[0]
+        try:
+            cmds.setAttr(f"{_EMBEDDED_CAM}.hiddenInOutliner", 1)
+            cmds.setAttr(f"{_EMBEDDED_CAM}.visibility", 0)
+        except Exception:
+            pass
+    return _EMBEDDED_CAM
+
+
+def _build_embedded_viewport() -> str:
+    """Create a modelPanel embedded in the tool window that shows the
+    live preview via a dedicated camera. Wrapped in a frame so a
+    Maya build that refuses to embed a modelPanel gracefully falls
+    back to a text placeholder."""
+    frame = cmds.frameLayout(l="🎥 3D プレビュー",
+                             cll=False, mh=2, mw=2,
+                             bgc=(0.16, 0.16, 0.18))
+    try:
+        cam = _ensure_preview_camera()
+        pane = cmds.paneLayout(configuration="single")
+        # Kill any prior instance of the panel — names are global.
+        if cmds.modelPanel(_EMBEDDED_PANEL, exists=True):
+            try:
+                cmds.deleteUI(_EMBEDDED_PANEL, panel=True)
+            except Exception:
+                pass
+        cmds.modelPanel(_EMBEDDED_PANEL, cam=cam, mbv=False, parent=pane)
+        try:
+            editor = cmds.modelPanel(_EMBEDDED_PANEL, q=True, modelEditor=True)
+            cmds.modelEditor(editor, e=True,
+                             grid=True, dl="default",
+                             displayAppearance="smoothShaded",
+                             twoSidedLighting=True,
+                             shadows=False,
+                             manipulators=False,
+                             headsUpDisplay=False,
+                             selectionHiliteDisplay=False)
+        except Exception:
+            pass
+        cmds.setParent("..")   # exit pane
+    except Exception as exc:
+        # Some Maya builds / batch modes reject embedded modelPanels —
+        # show a fallback so the tool still works.
+        print(f"[paint_projectile] embedded viewport unavailable: {exc}")
+        cmds.text(l="(3D プレビューはこの Maya では埋め込めません。"
+                    "Maya の通常ビューポートで表示されます。)",
+                  h=60, al="center")
+    cmds.setParent("..")   # exit frame
+    return frame
+
+
+def _frame_embedded_camera(grp) -> None:
+    """Point the dedicated preview camera at ``grp`` so the embedded
+    panel always shows the whole shot. Uses cmds.viewPlace so we don't
+    need to touch the current selection or steal focus from the main
+    viewport."""
+    if not cmds.objExists(grp) or not cmds.objExists(_EMBEDDED_CAM):
+        return
+    try:
+        bbox = cmds.exactWorldBoundingBox(grp)
+    except Exception:
+        return
+    cx = (bbox[0] + bbox[3]) * 0.5
+    cy = (bbox[1] + bbox[4]) * 0.5
+    cz = (bbox[2] + bbox[5]) * 0.5
+    dx = bbox[3] - bbox[0]
+    dy = bbox[4] - bbox[1]
+    dz = bbox[5] - bbox[2]
+    diag = math.sqrt(dx * dx + dy * dy + dz * dz) or 1.0
+    dist = max(2.0, diag * 1.6)
+    eye = (cx + dist * 0.6, cy + dist * 0.4, cz + dist * 0.75)
+    try:
+        cmds.viewPlace(_EMBEDDED_CAM,
+                       eye=eye, la=(cx, cy, cz), up=(0.0, 1.0, 0.0))
+    except Exception:
+        # Fallback: just place the transform and let user orbit
+        try:
+            cmds.xform(_EMBEDDED_CAM, ws=True, t=eye)
+        except Exception:
+            pass
+
 
 def _schedule_live_preview(fields, *_) -> None:
     """Called from every slider dc/cc. Queues one deferred rebuild;
@@ -697,6 +788,12 @@ def _rebuild_3d_preview(fields, frame_view: bool = True,
     )
 
     if grp and cmds.objExists(grp):
+        # Always reframe the EMBEDDED panel's camera so the animator
+        # can see the preview inside the tool window without touching
+        # their main viewport. This is safe — the embedded camera is
+        # dedicated to this tool.
+        _frame_embedded_camera(grp)
+
         if frame_view:
             try:
                 cmds.select(grp, r=True)
@@ -839,7 +936,7 @@ def show() -> str:
     win = cmds.window(
         WINDOW,
         t=f"Paint Projectile FX  —  v{_pkg_version}",
-        w=520, h=760, mnb=True, mxb=False, s=True,
+        w=520, h=1000, mnb=True, mxb=False, s=True,
     )
 
     fields = {}
@@ -848,6 +945,7 @@ def show() -> str:
     # Root vertical stack — every row has a fixed purpose so the user
     # always knows where to look for a given control.
     root = cmds.formLayout()
+    viewport_frame = _build_embedded_viewport()
     setup_frame = _build_setup_bar(fields)
     tabs = _build_parameter_tabs(fields, live)
     preview_bar = _build_preview_bar(fields)
@@ -857,17 +955,25 @@ def show() -> str:
     cmds.formLayout(
         root, e=True,
         attachForm=[
-            (setup_frame, "top", 4), (setup_frame, "left", 4), (setup_frame, "right", 4),
+            (viewport_frame, "top", 4), (viewport_frame, "left", 4),
+            (viewport_frame, "right", 4),
+            (setup_frame, "left", 4), (setup_frame, "right", 4),
             (preview_bar, "left", 4), (preview_bar, "right", 4),
             (generate_bar, "left", 4), (generate_bar, "right", 4),
             (footer, "left", 4), (footer, "right", 4), (footer, "bottom", 4),
             (tabs, "left", 4), (tabs, "right", 4),
         ],
         attachControl=[
+            (setup_frame, "top", 4, viewport_frame),
             (tabs, "top", 4, setup_frame),
             (tabs, "bottom", 4, preview_bar),
             (preview_bar, "bottom", 4, generate_bar),
             (generate_bar, "bottom", 4, footer),
+        ],
+        attachPosition=[
+            # Give the embedded viewport a fixed fraction of the
+            # window height so the controls below always have room too.
+            (viewport_frame, "bottom", 0, 38),
         ],
     )
 
