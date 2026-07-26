@@ -590,112 +590,23 @@ def _install_qlabel(anchor_name: str, label_name: str, w: int, h: int):
 # single deferred rebuild — no point rebuilding 30 times per second.
 _preview_pending = False
 
-# In-window viewport widgets. Unique global names because Maya's
-# modelPanel lives in its own registry alongside the main workspace
-# panels.
-_EMBEDDED_PANEL = "paintProjectilePreviewPanel"
-_EMBEDDED_CAM = "paintProjectilePreviewCam"
 
-
-def _ensure_preview_camera() -> str:
-    """Get / create the dedicated preview camera. Returns transform."""
-    if not cmds.objExists(_EMBEDDED_CAM):
-        cam_shape = cmds.camera(n=_EMBEDDED_CAM)[0]
-        try:
-            cmds.setAttr(f"{_EMBEDDED_CAM}.hiddenInOutliner", 1)
-            cmds.setAttr(f"{_EMBEDDED_CAM}.visibility", 0)
-        except Exception:
-            pass
-    return _EMBEDDED_CAM
-
-
-def _build_embedded_viewport() -> str:
-    """Create a modelPanel embedded in the tool window that shows the
-    live preview via a dedicated camera. Wrapped in a frame so a
-    Maya build that refuses to embed a modelPanel gracefully falls
-    back to a text placeholder.
-
-    IMPORTANT: this function must always leave the cmds setParent
-    context back at the OUTER form. If it entered a paneLayout it
-    must exit it, even on error, or the next _build_* call ends up
-    as a child of *this* frame instead of a sibling.
-    """
-    frame = cmds.frameLayout(l="🎥 3D プレビュー",
-                             cll=False, mh=2, mw=2,
-                             bgc=(0.16, 0.16, 0.18))
-    embedded_ok = False
-    entered_pane = False
-    try:
-        cam = _ensure_preview_camera()
-        cmds.paneLayout(configuration="single")
-        entered_pane = True
-        # Kill any prior instance of the panel — names are global.
-        if cmds.modelPanel(_EMBEDDED_PANEL, exists=True):
+def _cleanup_legacy_embedded_viewport() -> None:
+    """Remove leftover embedded-viewport nodes from earlier versions
+    (v0.9.x tried an in-window modelPanel + dedicated camera; that
+    approach was rolled back)."""
+    for name in ("paintProjectilePreviewCam",
+                 "paintProjectilePreviewCamShape"):
+        if cmds.objExists(name):
             try:
-                cmds.deleteUI(_EMBEDDED_PANEL, panel=True)
+                cmds.delete(name)
             except Exception:
                 pass
-        cmds.modelPanel(_EMBEDDED_PANEL, cam=cam, mbv=False)
-        try:
-            editor = cmds.modelPanel(_EMBEDDED_PANEL, q=True, modelEditor=True)
-            cmds.modelEditor(editor, e=True,
-                             grid=True, dl="default",
-                             displayAppearance="smoothShaded",
-                             twoSidedLighting=True,
-                             shadows=False,
-                             manipulators=False,
-                             headsUpDisplay=False,
-                             selectionHiliteDisplay=False)
-        except Exception:
-            pass
-        embedded_ok = True
-    except Exception as exc:
-        print(f"[paint_projectile] embedded viewport unavailable: {exc}")
-
-    # Always exit paneLayout if we opened one, so the fallback text
-    # (if any) and the final setParent("..") work at the correct
-    # nesting level.
-    if entered_pane:
-        cmds.setParent("..")
-
-    if not embedded_ok:
-        cmds.text(l="(3D プレビューはこの Maya では埋め込めません。"
-                    "Maya の通常ビューポートで表示されます。)",
-                  h=60, al="center")
-
-    cmds.setParent("..")   # exit frame → back to root form
-    return frame
-
-
-def _frame_embedded_camera(grp) -> None:
-    """Point the dedicated preview camera at ``grp`` so the embedded
-    panel always shows the whole shot. Uses cmds.viewPlace so we don't
-    need to touch the current selection or steal focus from the main
-    viewport."""
-    if not cmds.objExists(grp) or not cmds.objExists(_EMBEDDED_CAM):
-        return
     try:
-        bbox = cmds.exactWorldBoundingBox(grp)
+        if cmds.modelPanel("paintProjectilePreviewPanel", exists=True):
+            cmds.deleteUI("paintProjectilePreviewPanel", panel=True)
     except Exception:
-        return
-    cx = (bbox[0] + bbox[3]) * 0.5
-    cy = (bbox[1] + bbox[4]) * 0.5
-    cz = (bbox[2] + bbox[5]) * 0.5
-    dx = bbox[3] - bbox[0]
-    dy = bbox[4] - bbox[1]
-    dz = bbox[5] - bbox[2]
-    diag = math.sqrt(dx * dx + dy * dy + dz * dz) or 1.0
-    dist = max(2.0, diag * 1.6)
-    eye = (cx + dist * 0.6, cy + dist * 0.4, cz + dist * 0.75)
-    try:
-        cmds.viewPlace(_EMBEDDED_CAM,
-                       eye=eye, la=(cx, cy, cz), up=(0.0, 1.0, 0.0))
-    except Exception:
-        # Fallback: just place the transform and let user orbit
-        try:
-            cmds.xform(_EMBEDDED_CAM, ws=True, t=eye)
-        except Exception:
-            pass
+        pass
 
 
 def _schedule_live_preview(fields, *_) -> None:
@@ -712,11 +623,7 @@ def _do_live_preview(fields) -> None:
     global _preview_pending
     _preview_pending = False
     try:
-        # Slider-driven rebuilds: don't grab the camera or the
-        # selection — the animator is looking at the preview
-        # deliberately and doesn't want the viewport pulling itself
-        # around every time a value changes.
-        _rebuild_3d_preview(fields, frame_view=False, keep_selection=True)
+        _rebuild_3d_preview(fields)
     except Exception as exc:
         import traceback
         print(f"[paint_projectile] preview rebuild failed: {exc}")
@@ -727,20 +634,16 @@ def _clear_3d_preview(*_) -> None:
     _preview.clear_preview()
 
 
-def _rebuild_3d_preview(fields, frame_view: bool = True,
-                        keep_selection: bool = False) -> None:
+def _rebuild_3d_preview(fields) -> None:
     """Read the current UI values and hand them to preview.rebuild().
 
-    ``frame_view`` — call viewFit on the preview group afterwards so
-    the animator can find it. Only set True for explicit clicks of the
-    "今すぐ再構築" button; slider-driven rebuilds should leave the
-    camera alone.
-
-    ``keep_selection`` — preserve the pre-rebuild selection instead of
-    selecting the preview group. Again, sliders should not steal the
-    animator's selection.
+    HARD RULE: this function must NEVER touch the animator's viewport
+    camera or selection. No viewFit, no cmds.select, no lookThru — the
+    preview objects are simply created / updated in place and Maya's
+    viewport shows them wherever they land. If the animator wants to
+    look at them they can Frame All manually.
     """
-    prev_selection = cmds.ls(sl=True, l=False) if keep_selection else None
+    prev_selection = cmds.ls(sl=True, l=False)
     mesh = cmds.textFieldButtonGrp(fields["mesh"], q=True, text=True).strip()
     start_node = cmds.textFieldButtonGrp(fields["start"], q=True, text=True).strip()
     target_node = cmds.textFieldButtonGrp(fields["target"], q=True, text=True).strip()
@@ -803,32 +706,16 @@ def _rebuild_3d_preview(fields, frame_view: bool = True,
         shape_seed=int(cmds.intField(fields["shapeSeed"], q=True, v=True)),
     )
 
-    if grp and cmds.objExists(grp):
-        # Always reframe the EMBEDDED panel's camera so the animator
-        # can see the preview inside the tool window without touching
-        # their main viewport. This is safe — the embedded camera is
-        # dedicated to this tool.
-        _frame_embedded_camera(grp)
-
-        if frame_view:
-            try:
-                cmds.select(grp, r=True)
-                cmds.viewFit(grp, all=False, animate=False)
-            except Exception:
-                pass
-            cmds.inViewMessage(
-                amg=(f"<hl>プレビュー更新</hl>: "
-                     f"'{_preview.PREVIEW_GROUP_NAME}' 以下に配置しました。"
-                     "  ▶ Space で再生 → 実速度で確認。"),
-                pos="topCenter", fade=True, alpha=0.9)
-        if keep_selection and prev_selection is not None:
-            try:
-                if prev_selection:
-                    cmds.select(prev_selection, r=True)
-                else:
-                    cmds.select(cl=True)
-            except Exception:
-                pass
+    # Restore the animator's selection exactly as it was. preview.rebuild
+    # itself doesn't touch selection, but be defensive — any future
+    # cmds call that quietly steals selection is caught here.
+    try:
+        if prev_selection:
+            cmds.select(prev_selection, r=True)
+        else:
+            cmds.select(cl=True)
+    except Exception:
+        pass
 
 
 def _reroll_shape_seed(fields) -> None:
@@ -952,16 +839,21 @@ def show() -> str:
     win = cmds.window(
         WINDOW,
         t=f"Paint Projectile FX  —  v{_pkg_version}",
-        w=520, h=1000, mnb=True, mxb=False, s=True,
+        w=520, h=760, mnb=True, mxb=False, s=True,
     )
+
+    # Clear out any stray camera / panel left over from the v0.9.x
+    # embedded-viewport experiment.
+    _cleanup_legacy_embedded_viewport()
 
     fields = {}
     live = lambda *_: _schedule_live_preview(fields)
 
     # Root vertical stack — every row has a fixed purpose so the user
-    # always knows where to look for a given control.
+    # always knows where to look for a given control. Preview lives in
+    # Maya's real viewport (via preview.rebuild); the tool window only
+    # holds controls.
     root = cmds.formLayout()
-    viewport_frame = _build_embedded_viewport()
     setup_frame = _build_setup_bar(fields)
     tabs = _build_parameter_tabs(fields, live)
     preview_bar = _build_preview_bar(fields)
@@ -971,25 +863,17 @@ def show() -> str:
     cmds.formLayout(
         root, e=True,
         attachForm=[
-            (viewport_frame, "top", 4), (viewport_frame, "left", 4),
-            (viewport_frame, "right", 4),
-            (setup_frame, "left", 4), (setup_frame, "right", 4),
+            (setup_frame, "top", 4), (setup_frame, "left", 4), (setup_frame, "right", 4),
             (preview_bar, "left", 4), (preview_bar, "right", 4),
             (generate_bar, "left", 4), (generate_bar, "right", 4),
             (footer, "left", 4), (footer, "right", 4), (footer, "bottom", 4),
             (tabs, "left", 4), (tabs, "right", 4),
         ],
         attachControl=[
-            (setup_frame, "top", 4, viewport_frame),
             (tabs, "top", 4, setup_frame),
             (tabs, "bottom", 4, preview_bar),
             (preview_bar, "bottom", 4, generate_bar),
             (generate_bar, "bottom", 4, footer),
-        ],
-        attachPosition=[
-            # Give the embedded viewport a fixed fraction of the
-            # window height so the controls below always have room too.
-            (viewport_frame, "bottom", 0, 38),
         ],
     )
 
@@ -1218,7 +1102,8 @@ def _build_preview_bar(fields) -> str:
                              mh=4, mw=4, bgc=(0.22, 0.26, 0.28))
     cmds.rowLayout(nc=3, adj=1, cw3=(200, 130, 130))
     cmds.button(l="今すぐ再構築", h=26,
-                ann="Mesh/Start/Target を切り替えた後などに手動で再構築。",
+                ann=("Mesh/Start/Target を切り替えた後などに手動で再構築。"
+                     " (F キーでプレビュー グループにフレーミング可)"),
                 c=lambda *_: _rebuild_3d_preview(fields))
     cmds.button(l="削除", h=26, bgc=(0.5, 0.3, 0.3),
                 ann="プレビュー用オブジェクトをシーンから削除。",
