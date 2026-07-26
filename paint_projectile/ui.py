@@ -12,6 +12,7 @@ import math
 from typing import Optional
 
 from . import __version__ as _pkg_version
+from . import preview as _preview
 from . import splat as _splat
 from . import system as _system
 from . import trajectory as _traj
@@ -159,7 +160,7 @@ def _pick_single(text_field: str, node_type_filter: Optional[str] = None,
             return
     cmds.textFieldButtonGrp(text_field, e=True, text=node)
     if fields is not None:
-        _update_live_preview(fields)
+        _schedule_live_preview(fields)
 
 
 def _pick_multi(text_field: str, node_type_filter: Optional[str] = None,
@@ -184,13 +185,13 @@ def _pick_multi(text_field: str, node_type_filter: Optional[str] = None,
     if added == 0:
         cmds.warning("追加できるメッシュ選択がありません。")
     if fields is not None:
-        _update_live_preview(fields)
+        _schedule_live_preview(fields)
 
 
 def _clear_field(text_field: str, fields=None) -> None:
     cmds.textFieldButtonGrp(text_field, e=True, text="")
     if fields is not None:
-        _update_live_preview(fields)
+        _schedule_live_preview(fields)
 
 
 def _parse_csv(text: str) -> list:
@@ -585,26 +586,83 @@ def _install_qlabel(anchor_name: str, label_name: str, w: int, h: int):
 # Live preview update
 # --------------------------------------------------------------------------- #
 
-def _update_live_preview(fields, *_) -> None:
-    """Recompute and repaint both preview panels. Called from every
-    slider's dc/cc callback and after picker actions."""
+# Coalesce rapid slider events (drag command fires 30+ Hz) into a
+# single deferred rebuild — no point rebuilding 30 times per second.
+_preview_pending = False
+
+
+def _schedule_live_preview(fields, *_) -> None:
+    """Called from every slider dc/cc. Queues one deferred rebuild;
+    additional calls while a rebuild is pending are coalesced."""
+    global _preview_pending
+    if _preview_pending:
+        return
+    _preview_pending = True
+    cmds.evalDeferred(lambda: _do_live_preview(fields), lowestPriority=True)
+
+
+def _do_live_preview(fields) -> None:
+    global _preview_pending
+    _preview_pending = False
     try:
-        traj_label = _install_qlabel(_TRAJECTORY_ANCHOR, _TRAJ_LABEL_NAME,
-                                     _PREVIEW_W, _PREVIEW_TRAJ_H)
-        splat_label = _install_qlabel(_SPLAT_ANCHOR, _SPLAT_LABEL_NAME,
-                                      _PREVIEW_W, _PREVIEW_SPLAT_H)
-        if traj_label is None and splat_label is None:
-            return
-        scene = _compute_preview_scene(fields)
-        if traj_label is not None:
-            traj_label.setPixmap(_render_trajectory_pixmap(scene))
-        if splat_label is not None:
-            splat_label.setPixmap(_render_splash_pixmap(scene))
+        _rebuild_3d_preview(fields)
     except Exception as exc:
-        # Preview must never break the UI — swallow and log.
         import traceback
-        print(f"[paint_projectile] preview update failed: {exc}")
+        print(f"[paint_projectile] preview rebuild failed: {exc}")
         traceback.print_exc()
+
+
+def _clear_3d_preview(*_) -> None:
+    _preview.clear_preview()
+
+
+def _rebuild_3d_preview(fields) -> None:
+    """Read the current UI values and hand them to preview.rebuild()."""
+    mesh = cmds.textFieldButtonGrp(fields["mesh"], q=True, text=True).strip()
+    start_node = cmds.textFieldButtonGrp(fields["start"], q=True, text=True).strip()
+    target_node = cmds.textFieldButtonGrp(fields["target"], q=True, text=True).strip()
+    colliders = _parse_csv(cmds.textFieldButtonGrp(
+        fields["colliders"], q=True, text=True))
+    splat_templates = _parse_csv(cmds.textFieldButtonGrp(
+        fields["splatTemplates"], q=True, text=True))
+
+    _preview.rebuild(
+        mesh=mesh,
+        start_node=start_node,
+        target_node=target_node,
+        speed=cmds.floatSliderGrp(fields["speed"], q=True, v=True),
+        gravity=cmds.floatSliderGrp(fields["gravity"], q=True, v=True),
+        start_frame=int(cmds.intFieldGrp(fields["startFrame"], q=True, v1=True)),
+        end_frame=int(cmds.intFieldGrp(fields["endFrame"], q=True, v1=True)),
+        collision_meshes=colliders or None,
+        splat_templates=splat_templates or None,
+        splat_scale=cmds.floatSliderGrp(fields["splatScale"], q=True, v=True),
+        splat_surface_offset=cmds.floatSliderGrp(
+            fields["splatOffset"], q=True, v=True),
+        splat_grow_frames=int(cmds.intFieldGrp(
+            fields["splatGrow"], q=True, v1=True)),
+        splat_max_stretch=cmds.floatSliderGrp(
+            fields["splatStretch"], q=True, v=True),
+        splat_min_squeeze=cmds.floatSliderGrp(
+            fields["splatSqueeze"], q=True, v=True),
+        splat_rotation_jitter=cmds.floatSliderGrp(
+            fields["splatJitter"], q=True, v=True),
+        splat_forward_bias=cmds.floatSliderGrp(
+            fields["splatForwardBias"], q=True, v=True),
+        splat_thickness=cmds.floatSliderGrp(
+            fields["splatThickness"], q=True, v=True),
+        impact_squash_frames=int(cmds.intFieldGrp(
+            fields["squashFrames"], q=True, v1=True)),
+        shape_seed=int(cmds.intFieldGrp(fields["shapeSeed"], q=True, v1=True)),
+    )
+
+
+def _reroll_shape_seed(fields) -> None:
+    """Increment the shape seed field by 1 to get a fresh random shape
+    while keeping every other slider's value fixed."""
+    current = int(cmds.intFieldGrp(fields["shapeSeed"], q=True, v1=True))
+    cmds.intFieldGrp(fields["shapeSeed"], e=True, v1=current + 1)
+    _schedule_live_preview(fields)
 
 
 # --------------------------------------------------------------------------- #
@@ -641,6 +699,7 @@ def _on_generate(fields):
     splat_jitter = cmds.floatSliderGrp(fields["splatJitter"], q=True, v=True)
     splat_thickness = cmds.floatSliderGrp(fields["splatThickness"],
                                            q=True, v=True)
+    shape_seed = int(cmds.intFieldGrp(fields["shapeSeed"], q=True, v1=True))
     squash_frames = int(cmds.intFieldGrp(fields["squashFrames"], q=True, v1=True))
 
     result = _system.create_projectile_system(
@@ -663,8 +722,11 @@ def _on_generate(fields):
         splat_rotation_jitter=splat_jitter,
         splat_forward_bias=splat_forward_bias,
         splat_thickness=splat_thickness,
+        splat_seed=shape_seed,
         impact_squash_frames=squash_frames,
     )
+    # Clear the live preview so it doesn't stack under the real one.
+    _preview.clear_preview()
     cmds.select(result.controller, r=True)
 
     if colliders:
@@ -732,7 +794,7 @@ def show() -> str:
     # ---- MOTION (弾道) ----
     cmds.frameLayout(l="弾道", cll=False, mh=6, mw=6)
     cmds.columnLayout(adj=True, rs=4)
-    live = lambda *_: _update_live_preview(fields)
+    live = lambda *_: _schedule_live_preview(fields)
     fields["speed"] = cmds.floatSliderGrp(
         l="初速", f=True, min=0.0, max=200.0, fmn=0.0, fmx=1000.0,
         v=20.0, pre=2, dc=live, cc=live,
@@ -816,6 +878,12 @@ def show() -> str:
         l="厚み", f=True, min=0.0, max=0.5, fmn=0.0, fmx=2.0,
         v=0.08, pre=3, dc=live, cc=live,
         ann=("押し出し深さ (base radius 比)。0 で平面、0.08 で薄塗り。"))
+    fields["shapeSeed"] = cmds.intFieldGrp(
+        l="シード", nf=1, v1=0, cc=live,
+        ann=("スプラット形状の乱数シード。同じシード + 同じ設定なら "
+             "常に同じ形が出る。数値を変えると別の形状バリエーション。"))
+    cmds.button(l="シード リロール (別形状を試す)", h=22,
+                c=lambda *_: _reroll_shape_seed(fields))
     cmds.setParent("..")
     cmds.setParent("..")
 
@@ -838,25 +906,35 @@ def show() -> str:
     cmds.setParent("..")   # exit left column
     left_ctrl = left
 
-    # ---- Right: live preview panels ----
-    right = cmds.columnLayout(adj=True, rs=6, cat=("both", 8), w=420)
-    cmds.frameLayout(l="軌道プレビュー (側面)", cll=False, mh=6, mw=6)
-    cmds.columnLayout(adj=True, rs=4)
-    cmds.text(_TRAJECTORY_ANCHOR, l="(プレビュー準備中…)",
-              h=_PREVIEW_TRAJ_H, al="center")
+    # ---- Right: 3D viewport preview control panel ----
+    right = cmds.columnLayout(adj=True, rs=6, cat=("both", 8), w=340)
+    cmds.frameLayout(l="3D ライブプレビュー", cll=False, mh=6, mw=6)
+    cmds.columnLayout(adj=True, rs=6)
+    cmds.text(l=("スライダーを変更するたび、Maya ビューポート上に\n"
+                 "実際に生成された結果 (弾道 + 弾 + スプラット) を\n"
+                 "再構築します。\n"
+                 "\n"
+                 "・タイムライン スペースキーで再生 → 実際の速度で確認\n"
+                 "・GENERATE で最終シーンにコミット\n"
+                 "・プレビュー用オブジェクトは "
+                 f"'{_preview.PREVIEW_GROUP_NAME}' 以下\n"
+                 "  にまとめて配置され、GENERATE 時に自動削除。"),
+              al="left")
+    cmds.separator(h=6, style="in")
+    cmds.button(l="今すぐプレビュー再構築", h=32,
+                c=lambda *_: _rebuild_3d_preview(fields),
+                ann=("スライダーを触っていなくても手動で再構築します "
+                     "(Mesh/Start/Target を差し替えた後などに)。"))
+    cmds.button(l="プレビュー削除", h=26,
+                c=lambda *_: _clear_3d_preview(),
+                bgc=(0.5, 0.3, 0.3),
+                ann="プレビュー用オブジェクトをシーンから削除。")
+    cmds.separator(h=6, style="in")
+    cmds.button(l="タイムライン 再生 / 停止 (Space)", h=26,
+                c=lambda *_: cmds.play(state=not cmds.play(q=True, state=True),
+                                        forward=True))
     cmds.setParent("..")
     cmds.setParent("..")
-
-    cmds.frameLayout(l="スプラットプレビュー (上面)", cll=False, mh=6, mw=6)
-    cmds.columnLayout(adj=True, rs=4)
-    cmds.text(_SPLAT_ANCHOR, l="(プレビュー準備中…)",
-              h=_PREVIEW_SPLAT_H, al="center")
-    cmds.setParent("..")
-    cmds.setParent("..")
-
-    cmds.button(l="プレビュー再描画 (Shape 再ロール)", h=26,
-                c=lambda *_: _update_live_preview(fields),
-                ann="Splat Shape の乱数を振り直して再描画。")
     cmds.setParent("..")   # exit right column
 
     # Attach left / right in the outer form.
@@ -871,9 +949,8 @@ def show() -> str:
 
     cmds.showWindow(win)
 
-    # Kick off the first preview draw once Maya finishes laying out
-    # the QWidgets — otherwise findControl() returns None.
-    cmds.evalDeferred(lambda: _update_live_preview(fields),
-                      lowestPriority=True)
+    # Do NOT auto-rebuild on window open — the user has to explicitly
+    # click "今すぐプレビュー再構築" (or move a slider) so we don't
+    # spam the scene with a preview they might not want yet.
 
     return win

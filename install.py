@@ -53,6 +53,7 @@ _REMOTE_FILES = (
     f"{_PACKAGE}/collision.py",
     f"{_PACKAGE}/impact.py",
     f"{_PACKAGE}/splat.py",
+    f"{_PACKAGE}/preview.py",
     f"{_PACKAGE}/system.py",
     f"{_PACKAGE}/ui.py",
     _LAUNCHER,

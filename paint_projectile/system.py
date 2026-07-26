@@ -193,6 +193,7 @@ def create_projectile_system(
     splat_rotation_jitter: float = 12.0,
     splat_forward_bias: float = 1.0,
     splat_thickness: float = 0.08,
+    splat_seed: Optional[int] = None,
     impact_squash_frames: int = 1,
 ) -> ProjectileSystem:
     """Generate a projectile system.
@@ -492,7 +493,8 @@ def create_projectile_system(
                 shape_asymmetry=shape_asymmetry,
                 thickness=splat_thickness,
                 rotation_jitter_degrees=splat_rotation_jitter,
-                seed=impact_info.frame,
+                seed=(splat_seed if splat_seed is not None
+                      else impact_info.frame),
             )
 
     # Snap current time so the animator sees the first sample immediately.

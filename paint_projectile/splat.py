@@ -148,20 +148,48 @@ def compute_splash_geometry(
 
 def _extrude_facet(node: str, thickness: float) -> None:
     """Give a flat facet solid thickness by extruding all its faces
-    along their normal (which is +Y for our XZ-plane facets)."""
+    along their normal (which is +Y for our XZ-plane facets), then
+    bevel the resulting sharp edges and soft-edge all shading so the
+    splat reads as wet paint rather than a cardboard cutout."""
     if thickness <= 0.0:
         return
     faces = f"{node}.f[*]"
+
+    # Small taper of the top face so the profile reads as a rounded
+    # cap instead of a straight prism when viewed from the side.
     try:
         cmds.polyExtrudeFacet(faces, ltz=thickness,
-                              keepFacesTogether=True, ch=False)
+                              keepFacesTogether=True,
+                              localScaleX=0.85, localScaleZ=0.85,
+                              ch=False)
     except Exception:
-        # Fallback: some Maya versions require polyExtrudeFace instead.
         try:
             cmds.polyExtrudeFace(faces, ltz=thickness,
-                                 keepFacesTogether=True, ch=False)
+                                 keepFacesTogether=True,
+                                 localScaleX=0.85, localScaleZ=0.85,
+                                 ch=False)
         except Exception:
             pass
+
+    # Bevel the newly-created 90° edges so silhouettes are round.
+    try:
+        cmds.polyBevel3(f"{node}.e[*]",
+                        fraction=min(0.4, thickness * 3.0),
+                        offsetAsFraction=True,
+                        segments=1, autoFit=1, ch=False)
+    except Exception:
+        try:
+            cmds.polyBevel(f"{node}.e[*]",
+                           offset=thickness * 0.35, segments=1, ch=False)
+        except Exception:
+            pass
+
+    # Smooth shading (single hard-edge set at 180° = all edges soft),
+    # which hides the tiny facet steps left over from the polyUnite.
+    try:
+        cmds.polySoftEdge(node, angle=180, ch=False)
+    except Exception:
+        pass
 
 
 def _create_splash_facet(
