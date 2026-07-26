@@ -55,63 +55,61 @@ def _create_droplet_facet(name: str, radius: float, rng: random.Random) -> str:
 def _create_splash_facet(
     name: str,
     base_radius: float,
-    num_lobes: int = 7,
-    lobe_height: float = 0.30,
-    perimeter_subdivisions: int = 8,
+    num_spikes: int = 10,
+    spike_length: float = 0.50,
+    valley_depth: float = 0.25,
+    perimeter_subdivisions: int = 6,
     droplet_count: int = 5,
     droplet_min_dist: float = 1.35,
     droplet_max_dist: float = 2.0,
     asymmetry: float = 0.0,
     seed: Optional[int] = None,
 ) -> str:
-    """Build the reference-image-style splash: soft undulating perimeter
-    with satellite droplets scattered around. Everything lives in the
-    XZ plane at y=0 so the caller can orient it as a flat splat on the
-    surface.
+    """Build the reference-image-style splash: a jagged star silhouette
+    whose *peaks are rounded off* rather than snapped to sharp points.
 
-    The perimeter is built as a sine-wave envelope with ``num_lobes``
-    gentle humps around the circle. Each lobe is subdivided into
-    ``perimeter_subdivisions`` vertices so the silhouette reads as a
-    smooth wave rather than as sharp caltrop points. Per-lobe height
-    jitter and per-vertex position noise keep it organic without
-    making it spiky.
+    For each of ``num_spikes`` spikes we walk ``perimeter_subdivisions``
+    vertices from valley → peak → valley using a sine profile
+    ``r = base * (valley_factor + (peak_factor - valley_factor) * sin(πt))``.
+    Because the profile is a sine, both the valley cusps *and* the
+    spike tips are continuous curves — you keep the star silhouette
+    without the caltrop-sharp corners.
 
-    ``asymmetry`` (0..1) biases the perimeter and droplet placement so
-    vertices facing the +X direction (which the caller aligns with the
-    ball's forward tangent) reach further and vertices facing -X are
-    shortened. At 0 the splash is radially symmetric; at 1 the -X side
-    is pulled in to ~30 % of its symmetric radius, giving a comet-like
-    teardrop.
+    - ``spike_length`` controls how far peaks extend outside ``base_radius``.
+    - ``valley_depth`` controls how far valleys are pulled inside it.
+    - ``perimeter_subdivisions`` (>= 4) is the number of verts per
+      spike; higher = smoother curves at peaks and valleys.
+
+    ``asymmetry`` (0..1) biases spikes on the +X side (the ball's
+    forward tangent) longer and spikes on the -X side shorter.
     """
     rng = random.Random(seed)
 
     def _forward_mult(angle: float) -> float:
-        # cos(angle) is +1 in the +X direction (forward), -1 in -X.
         forward = (math.cos(angle) + 1.0) * 0.5     # 0..1
         return 1.0 - asymmetry * (1.0 - forward) * 0.7
 
-    # Per-lobe jitter tables so the humps aren't all the same height /
-    # exactly evenly spaced.
-    lobe_height_jitter = [rng.uniform(0.7, 1.3) for _ in range(num_lobes)]
-    lobe_phase_jitter = [rng.uniform(-0.15, 0.15) for _ in range(num_lobes)]
+    # Per-spike jitter tables so heights and angular positions vary.
+    spike_height_jitter = [rng.uniform(0.7, 1.3) for _ in range(num_spikes)]
+    spike_phase_jitter = [rng.uniform(-0.15, 0.15) for _ in range(num_spikes)]
 
     verts = []
-    total_verts = num_lobes * perimeter_subdivisions
+    total_verts = num_spikes * max(4, perimeter_subdivisions)
     for i in range(total_verts):
-        # Which lobe are we walking through?
-        lobe_index_f = i / perimeter_subdivisions
-        lobe_index = int(lobe_index_f) % num_lobes
-        frac = lobe_index_f - int(lobe_index_f)     # 0..1 within lobe
-        # Angle around the circle, with a small per-lobe phase shift so
-        # the humps don't land at perfectly equal intervals.
-        angle = ((lobe_index + frac + lobe_phase_jitter[lobe_index])
-                 / num_lobes) * math.tau
-        # Sine wave: 0 at the start and end of the lobe (where lobes
-        # meet), 1 at the middle (peak of the hump).
+        # Which spike zone are we walking through?
+        spike_index_f = i / perimeter_subdivisions
+        spike_index = int(spike_index_f) % num_spikes
+        frac = spike_index_f - int(spike_index_f)   # 0..1 within spike
+        angle = ((spike_index + frac + spike_phase_jitter[spike_index])
+                 / num_spikes) * math.tau
+        # Sine profile: sin(π·frac) is 0 at spike edges (valley cusps),
+        # 1 at spike centre (peak tip). Both the transition INTO the
+        # peak and the transition OUT of the valley are smooth arcs.
         wave = math.sin(frac * math.pi)
-        height = lobe_height_jitter[lobe_index]
-        r = base_radius * (1.0 + lobe_height * wave * height)
-        # Micro jitter so it doesn't look like a perfect analytic curve.
+        peak_factor = 1.0 + spike_length * spike_height_jitter[spike_index]
+        r = base_radius * (
+            (1.0 - valley_depth) + (peak_factor - (1.0 - valley_depth)) * wave
+        )
         r *= 1.0 + rng.uniform(-0.03, 0.03)
         r *= _forward_mult(angle)
         verts.append((r * math.cos(angle), 0.0, r * math.sin(angle)))
