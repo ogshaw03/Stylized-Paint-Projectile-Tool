@@ -426,32 +426,56 @@ print(f"sha256   : {sha}")
 
 ## 5. 参考実装
 
-このリポジトリ自体が上記パターンを全部実装している:
+> **⚠ この doc を新規ツール開発セッションで読み込ませる場合**
+>
+> 以下 §5 〜 §7 で「このリポジトリ」「`docs/reference-code/…`」と書かれている
+> のは、**この doc が置いてある参照元リポジトリ = `ogshaw03/Stylized-Paint-Projectile-Tool`**
+> を指す。あなたが今書いている新ツール リポジトリのことではない。
+>
+> 新セッションでは、以下の URL 群を **WebFetch で取得してから** コピペ / 書き換え
+> ベースの実装を進めること。相対パスとして自分の作業ツリーを検索しない。
+>
+> - パターン doc (この doc):
+>   `https://raw.githubusercontent.com/ogshaw03/Stylized-Paint-Projectile-Tool/main/docs/maya-hot-update-patterns.md`
+> - installer テンプレ:
+>   `https://raw.githubusercontent.com/ogshaw03/Stylized-Paint-Projectile-Tool/main/docs/reference-code/install.py`
+> - ツール本体テンプレ:
+>   `https://raw.githubusercontent.com/ogshaw03/Stylized-Paint-Projectile-Tool/main/docs/reference-code/my_tool.py`
+> - テンプレ README:
+>   `https://raw.githubusercontent.com/ogshaw03/Stylized-Paint-Projectile-Tool/main/docs/reference-code/README.md`
+
+参照元リポジトリ側で上記パターンを全部実装している一次実装:
 
 - `install.py` — SHA-pinned fetch, atomic write, force overwrite, shelf popup
 - `paint_projectile/ui.py` — Update ボタン (`_update_from_github` + `_run_update` + `_reopen_after_update`)
 - `paint_projectile/__init__.py` — `__version__`
 
-さらに **新規ツール向けにインフラだけ抜き出したテンプレート** を
-`docs/reference-code/` に置いてある:
+さらに **新規ツール向けにインフラだけ抜き出したテンプレート** が、
+参照元リポジトリの `docs/reference-code/` に置いてある (上記 URL 参照):
 
 ```
-docs/reference-code/
+<paint_projectile repo>/docs/reference-code/
 ├── README.md      ← セットアップ手順 / 検証チェックリスト
 ├── install.py     ← ドラッグ&ドロップ installer 単体テンプレ
 └── my_tool.py     ← ツール本体テンプレ (__version__ + show() + Update)
 ```
 
-2 ファイル (`install.py` + `my_tool.py`) だけコピー → 定数を書き換え → GitHub push、
+新セッションでは 2 ファイル (`install.py` + `my_tool.py`) を **WebFetch で
+取得** → 新ツール リポジトリのルートに置く → 定数書き換え → GitHub push、
 で同じ配布・更新体験のツールが立ち上がる。
 
 ---
 
 ## 6. テンプレの CUSTOMIZE ブロック — 書き換え必須の定数
 
-`docs/reference-code/` のテンプレは冒頭に `# ─── CUSTOMIZE ───` で挟まれた
-定数ブロックを持っている。**書き換えが必要なのはこのブロックだけ**、他は
-そのままで動く。
+**参照元リポジトリ側の** テンプレ (§5 の URL 群、参照元 =
+`ogshaw03/Stylized-Paint-Projectile-Tool` の `docs/reference-code/install.py` と
+`my_tool.py`) は冒頭に `# ─── CUSTOMIZE ───` で挟まれた定数ブロックを持って
+いる。**書き換えが必要なのはこのブロックだけ**、他はそのままで動く。
+
+新ツール セッションでは、これら 2 ファイルを WebFetch で取得 → 中身を
+新ツール リポジトリのルートに書き出し → 以下の CUSTOMIZE を新ツール向けに
+書き換えて GitHub に push、が定型フロー。
 
 ### 6-1. `install.py` (5 定数)
 
@@ -542,8 +566,13 @@ update 関連の関数 (`_resolve_latest_sha`, `update_from_github`, `_run_updat
    踏んだ落とし穴の再発防止)
 4. `_flush_imports` をパッケージ全体をポップするパターンに変更
 
-このリポジトリ本体 (`paint_projectile/` パッケージ) の `install.py` +
-`ui.py` が拡張後の実装例そのもの。参考にする。
+**参照元リポジトリ** (`ogshaw03/Stylized-Paint-Projectile-Tool`) の
+`paint_projectile/` パッケージ + そのルート `install.py` が拡張後の実装例
+そのもの。以下 URL を WebFetch して参考にする:
+
+- `https://raw.githubusercontent.com/ogshaw03/Stylized-Paint-Projectile-Tool/main/install.py`
+- `https://raw.githubusercontent.com/ogshaw03/Stylized-Paint-Projectile-Tool/main/paint_projectile/__init__.py`
+- `https://raw.githubusercontent.com/ogshaw03/Stylized-Paint-Projectile-Tool/main/paint_projectile/ui.py`
 
 ---
 
@@ -553,14 +582,16 @@ update 関連の関数 (`_resolve_latest_sha`, `update_from_github`, `_run_updat
 
 ```
 新しい Maya ツール "<ツール名>" を作りたい。
-配布とアップデートは以下の参考実装のパターンで組み込んで:
+配布とアップデートは別リポジトリ (paint_projectile) の参考実装パターンで
+組み込んで。以下 3 ファイルを WebFetch で取得して読み込んで:
 
-  https://github.com/ogshaw03/Stylized-Paint-Projectile-Tool/blob/main/docs/maya-hot-update-patterns.md
-  https://github.com/ogshaw03/Stylized-Paint-Projectile-Tool/blob/main/docs/reference-code/install.py
-  https://github.com/ogshaw03/Stylized-Paint-Projectile-Tool/blob/main/docs/reference-code/my_tool.py
+  https://raw.githubusercontent.com/ogshaw03/Stylized-Paint-Projectile-Tool/main/docs/maya-hot-update-patterns.md
+  https://raw.githubusercontent.com/ogshaw03/Stylized-Paint-Projectile-Tool/main/docs/reference-code/install.py
+  https://raw.githubusercontent.com/ogshaw03/Stylized-Paint-Projectile-Tool/main/docs/reference-code/my_tool.py
 
-上記 3 ファイルの内容を WebFetch して読み込み、install.py と <ツール名>.py の
-CUSTOMIZE ブロック (§6) を以下で埋めて:
+参照元リポジトリ (paint_projectile) の中身は真似しない。
+上の 2 つの .py の中身を こちら (新ツール リポジトリ) の
+ルート に書き出し、CUSTOMIZE ブロック (patterns doc §6) を以下で埋めて:
 
   GitHub owner: <あなたの GitHub アカウント>
   リポジトリ名: <新リポジトリ名>
