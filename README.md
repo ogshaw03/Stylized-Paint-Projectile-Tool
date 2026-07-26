@@ -30,16 +30,42 @@ Smear / Collision / Splat / Droplet は今後の段階で追加予定。
 
 ## インストール
 
-このリポジトリのルートを Maya の `PYTHONPATH` (もしくは `MAYA_SCRIPT_PATH`) に追加します。
-例 (`Maya.env` に追記):
+### 方法 A ─ ワンクリック インストーラ (推奨)
+
+`install.py` を Maya のビューポートに **ドラッグ&ドロップ** するだけで、
+
+1. `paint_projectile/` パッケージと `paint_projectile_launch.py` を
+   Maya のユーザースクリプトフォルダにコピー
+   (例: `Documents/maya/2023/scripts/`)
+2. `sys.path` に自動追加
+3. 現在アクティブなシェルフに **PaintFX ボタン** を追加
+
+が完了します。以降はシェルフボタンを押すだけで UI が起動します。
+
+Script Editor から実行する場合は Python タブで:
+
+```python
+exec(open(r"C:/path/to/Stylized-Paint-Projectile-Tool/install.py").read())
+```
+
+再実行しても安全 (既存インストールを上書きします)。
+
+### 方法 B ─ PYTHONPATH を直接指定
+
+`Maya.env` に追記:
 
 ```
-PYTHONPATH = <repo>
+PYTHONPATH = C:/path/to/Stylized-Paint-Projectile-Tool
 ```
+
+Maya 再起動後に読み込まれます。開発中でリポジトリのファイルをそのまま編集したい場合はこちら。
 
 ## 使い方
 
 ### 1) UI から
+
+インストーラを使った場合はシェルフの **PaintFX** ボタンをクリック。
+手動で開くなら Script Editor の Python タブで:
 
 ```python
 import paint_projectile_launch
