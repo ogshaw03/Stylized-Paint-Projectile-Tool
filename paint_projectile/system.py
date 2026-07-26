@@ -427,19 +427,22 @@ def create_projectile_system(
                 impact_frame=impact_info.frame,
                 squash_frames=impact_squash_frames,
             )
-            # Also freeze trajectory time so worldOffset / cameraOffset
-            # keys the animator adds after impact don't drag a hidden
-            # ball around behind the splat.
+            # Freeze trajectory time to the SUB-frame of the actual
+            # ray-cast hit (not just the integer impact frame). Sampling
+            # base curves at sub_frame linearly interpolates
+            # positions[i]→positions[i+1] with the same parameter the
+            # ray used, so the projectile lands exactly at the splat's
+            # position instead of one sample short.
             cmds.setKeyframe(ctrl, at="trajectoryTime",
                              t=impact_info.frame,
-                             v=float(impact_info.frame),
+                             v=float(impact_info.sub_frame),
                              inTangentType="linear",
                              outTangentType="linear")
             hold_frame = impact_info.frame + impact_squash_frames + 1
             if hold_frame <= end_frame:
                 cmds.setKeyframe(ctrl, at="trajectoryTime",
                                  t=hold_frame,
-                                 v=float(impact_info.frame),
+                                 v=float(impact_info.sub_frame),
                                  inTangentType="linear",
                                  outTangentType="linear")
 

@@ -205,6 +205,16 @@ def _rebuild_impl(
             impact_info = None
 
     if impact_info is not None:
+        # The base-trajectory samples land ON frame boundaries, but
+        # the ray-cast hit sits BETWEEN two samples (sub_frame). Left
+        # alone, the ball would key to positions[impact_frame] one
+        # sample short of the actual contact point, so the ball
+        # visibly floats a few units away from where the splat lands.
+        # Overwrite the impact-frame key with the exact hit position
+        # so the two land on top of each other.
+        for axis, val in zip("XYZ", impact_info.position):
+            cmds.setKeyframe(ball, at=f"translate{axis}",
+                             t=impact_info.frame, v=float(val))
         try:
             _impact.apply_impact_animation(
                 projectile_xform=ball,
