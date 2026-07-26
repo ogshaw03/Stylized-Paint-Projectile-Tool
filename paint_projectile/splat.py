@@ -55,27 +55,33 @@ def _create_droplet_facet(name: str, radius: float, rng: random.Random) -> str:
 def _create_splash_facet(
     name: str,
     base_radius: float,
-    num_spikes: int = 11,
-    spike_length: float = 0.55,
-    valley_depth: float = 0.25,
-    droplet_count: int = 6,
+    num_lobes: int = 7,
+    lobe_height: float = 0.30,
+    perimeter_subdivisions: int = 8,
+    droplet_count: int = 5,
     droplet_min_dist: float = 1.35,
     droplet_max_dist: float = 2.0,
     asymmetry: float = 0.0,
     seed: Optional[int] = None,
 ) -> str:
-    """Build the reference-image-style splash: irregular spike perimeter
+    """Build the reference-image-style splash: soft undulating perimeter
     with satellite droplets scattered around. Everything lives in the
     XZ plane at y=0 so the caller can orient it as a flat splat on the
     surface.
 
-    ``asymmetry`` (0..1) biases the spike lengths so vertices facing
-    the +X direction (which the caller aligns with the ball's forward
-    tangent) reach further and vertices facing -X are shortened. At 0
-    the splash is radially symmetric; at 1 the -X side is pulled in
-    to ~30 % of its symmetric radius, giving a comet-like teardrop.
-    Satellite droplets follow the same bias so nothing scatters behind
-    the impact point.
+    The perimeter is built as a sine-wave envelope with ``num_lobes``
+    gentle humps around the circle. Each lobe is subdivided into
+    ``perimeter_subdivisions`` vertices so the silhouette reads as a
+    smooth wave rather than as sharp caltrop points. Per-lobe height
+    jitter and per-vertex position noise keep it organic without
+    making it spiky.
+
+    ``asymmetry`` (0..1) biases the perimeter and droplet placement so
+    vertices facing the +X direction (which the caller aligns with the
+    ball's forward tangent) reach further and vertices facing -X are
+    shortened. At 0 the splash is radially symmetric; at 1 the -X side
+    is pulled in to ~30 % of its symmetric radius, giving a comet-like
+    teardrop.
     """
     rng = random.Random(seed)
 
@@ -84,22 +90,29 @@ def _create_splash_facet(
         forward = (math.cos(angle) + 1.0) * 0.5     # 0..1
         return 1.0 - asymmetry * (1.0 - forward) * 0.7
 
-    # Perimeter: for each spike, three vertices (valley → peak → valley)
-    # so the silhouette actually has sharp points instead of a smooth
-    # star.
+    # Per-lobe jitter tables so the humps aren't all the same height /
+    # exactly evenly spaced.
+    lobe_height_jitter = [rng.uniform(0.7, 1.3) for _ in range(num_lobes)]
+    lobe_phase_jitter = [rng.uniform(-0.15, 0.15) for _ in range(num_lobes)]
+
     verts = []
-    total_verts = num_spikes * 3
+    total_verts = num_lobes * perimeter_subdivisions
     for i in range(total_verts):
-        angle = (i / total_verts) * math.tau
-        stage = i % 3
-        if stage == 1:
-            # Peak — spike outward
-            r = base_radius * (1.0 + spike_length * rng.uniform(0.6, 1.3))
-        else:
-            # Valley — pulled in
-            r = base_radius * (1.0 - valley_depth * rng.uniform(0.7, 1.1))
-        # Slight per-vertex jitter so the outline reads as organic
-        r *= 1.0 + rng.uniform(-0.05, 0.05)
+        # Which lobe are we walking through?
+        lobe_index_f = i / perimeter_subdivisions
+        lobe_index = int(lobe_index_f) % num_lobes
+        frac = lobe_index_f - int(lobe_index_f)     # 0..1 within lobe
+        # Angle around the circle, with a small per-lobe phase shift so
+        # the humps don't land at perfectly equal intervals.
+        angle = ((lobe_index + frac + lobe_phase_jitter[lobe_index])
+                 / num_lobes) * math.tau
+        # Sine wave: 0 at the start and end of the lobe (where lobes
+        # meet), 1 at the middle (peak of the hump).
+        wave = math.sin(frac * math.pi)
+        height = lobe_height_jitter[lobe_index]
+        r = base_radius * (1.0 + lobe_height * wave * height)
+        # Micro jitter so it doesn't look like a perfect analytic curve.
+        r *= 1.0 + rng.uniform(-0.03, 0.03)
         r *= _forward_mult(angle)
         verts.append((r * math.cos(angle), 0.0, r * math.sin(angle)))
 
