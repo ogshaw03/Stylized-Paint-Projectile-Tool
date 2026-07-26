@@ -131,6 +131,8 @@ def _on_generate(fields):
     splat_grow = int(cmds.intFieldGrp(fields["splatGrow"], q=True, v1=True))
     splat_stretch = cmds.floatSliderGrp(fields["splatStretch"], q=True, v=True)
     splat_squeeze = cmds.floatSliderGrp(fields["splatSqueeze"], q=True, v=True)
+    splat_forward_bias = cmds.floatSliderGrp(fields["splatForwardBias"],
+                                              q=True, v=True)
     splat_jitter = cmds.floatSliderGrp(fields["splatJitter"], q=True, v=True)
     squash_frames = int(cmds.intFieldGrp(fields["squashFrames"], q=True, v1=True))
 
@@ -152,6 +154,7 @@ def _on_generate(fields):
         splat_max_stretch=splat_stretch,
         splat_min_squeeze=splat_squeeze,
         splat_rotation_jitter=splat_jitter,
+        splat_forward_bias=splat_forward_bias,
         impact_squash_frames=squash_frames,
     )
     cmds.select(result.controller, r=True)
@@ -383,6 +386,15 @@ def show() -> str:
         v=0.55, pre=2,
         annotation=("How much the splat squeezes perpendicular to the "
                     "direction of travel on a fully-grazing hit."))
+    fields["splatForwardBias"] = cmds.floatSliderGrp(
+        l="Forward Bias", f=True, min=0.0, max=1.0, fmn=0.0, fmx=1.0,
+        v=1.0, pre=2,
+        annotation=("How far to push the splat forward from the impact "
+                    "point along the direction of travel. 0 = splat "
+                    "centered on impact (extends both forward and "
+                    "backward). 1 = impact at back edge of splat "
+                    "(splash trails forward only, like a comet). "
+                    "Only affects grazing hits."))
     fields["splatJitter"] = cmds.floatSliderGrp(
         l="Rot Jitter", f=True, min=0.0, max=90.0, fmn=0.0, fmx=180.0,
         v=12.0, pre=1,

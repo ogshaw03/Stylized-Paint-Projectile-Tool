@@ -191,6 +191,7 @@ def create_projectile_system(
     splat_max_stretch: float = 1.8,
     splat_min_squeeze: float = 0.55,
     splat_rotation_jitter: float = 12.0,
+    splat_forward_bias: float = 1.0,
     impact_squash_frames: int = 1,
 ) -> ProjectileSystem:
     """Generate a projectile system.
@@ -242,6 +243,14 @@ def create_projectile_system(
     splat_rotation_jitter : float
         Random Y-axis rotation (degrees) applied on top of the
         tangent alignment so multiple splats don't read as identical.
+    splat_forward_bias : float (0..1)
+        How aggressively to push the splat forward from the impact
+        point so it trails in the direction of travel instead of
+        radiating symmetrically around impact. 0 = symmetric (splat
+        centered on impact), 1 = impact sits at the back edge of the
+        stretched splat, with the whole splash extending forward.
+        Only affects grazing hits — a perpendicular hit stays
+        symmetric regardless of this value.
     impact_squash_frames : int
         Number of frames after impact before the projectile hides.
     """
@@ -445,13 +454,25 @@ def create_projectile_system(
             projectile_radius = _splat.projectile_bounding_radius(mesh)
             splat_base_scale = projectile_radius * float(splat_scale)
 
-            # Velocity-driven directional stretch.
-            stretch_along, stretch_perp, tan_dir = _splat.compute_splat_stretch(
-                velocity=impact_info.velocity,
-                normal=impact_info.normal,
-                max_stretch=splat_max_stretch,
-                min_squeeze=splat_min_squeeze,
-            )
+            # Velocity-driven directional stretch + forward bias.
+            stretch_along, stretch_perp, tan_dir, grazing = \
+                _splat.compute_splat_stretch(
+                    velocity=impact_info.velocity,
+                    normal=impact_info.normal,
+                    max_stretch=splat_max_stretch,
+                    min_squeeze=splat_min_squeeze,
+                )
+            # Shift the splat forward along the tangent so the impact
+            # point sits at (or near) the trailing edge instead of the
+            # centre — grazing hits get the whole splash extending in
+            # the direction of travel, perpendicular hits stay centred.
+            forward_offset = (grazing * stretch_along
+                              * splat_base_scale
+                              * float(splat_forward_bias))
+            # Also bake a matching teardrop bias into the default
+            # procedural shape so backward spikes shrink to nothing on
+            # a grazing hit.
+            shape_asymmetry = grazing * float(splat_forward_bias)
 
             splat_name = _splat.create_splats_from_candidates(
                 base_name=f"{name}_splat",
@@ -466,6 +487,8 @@ def create_projectile_system(
                 stretch_along_tangent=stretch_along,
                 stretch_perp_tangent=stretch_perp,
                 tangent_direction=tan_dir,
+                forward_offset=forward_offset,
+                shape_asymmetry=shape_asymmetry,
                 rotation_jitter_degrees=splat_rotation_jitter,
                 seed=impact_info.frame,
             )

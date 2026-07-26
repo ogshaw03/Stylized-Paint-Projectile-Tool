@@ -61,13 +61,28 @@ def _create_splash_facet(
     droplet_count: int = 6,
     droplet_min_dist: float = 1.35,
     droplet_max_dist: float = 2.0,
+    asymmetry: float = 0.0,
     seed: Optional[int] = None,
 ) -> str:
     """Build the reference-image-style splash: irregular spike perimeter
     with satellite droplets scattered around. Everything lives in the
     XZ plane at y=0 so the caller can orient it as a flat splat on the
-    surface."""
+    surface.
+
+    ``asymmetry`` (0..1) biases the spike lengths so vertices facing
+    the +X direction (which the caller aligns with the ball's forward
+    tangent) reach further and vertices facing -X are shortened. At 0
+    the splash is radially symmetric; at 1 the -X side is pulled in
+    to ~30 % of its symmetric radius, giving a comet-like teardrop.
+    Satellite droplets follow the same bias so nothing scatters behind
+    the impact point.
+    """
     rng = random.Random(seed)
+
+    def _forward_mult(angle: float) -> float:
+        # cos(angle) is +1 in the +X direction (forward), -1 in -X.
+        forward = (math.cos(angle) + 1.0) * 0.5     # 0..1
+        return 1.0 - asymmetry * (1.0 - forward) * 0.7
 
     # Perimeter: for each spike, three vertices (valley → peak → valley)
     # so the silhouette actually has sharp points instead of a smooth
@@ -85,14 +100,22 @@ def _create_splash_facet(
             r = base_radius * (1.0 - valley_depth * rng.uniform(0.7, 1.1))
         # Slight per-vertex jitter so the outline reads as organic
         r *= 1.0 + rng.uniform(-0.05, 0.05)
+        r *= _forward_mult(angle)
         verts.append((r * math.cos(angle), 0.0, r * math.sin(angle)))
 
     main = cmds.polyCreateFacet(p=verts, ch=False, n=f"{name}_main")[0]
 
     droplets = []
     for i in range(droplet_count):
-        angle = rng.uniform(0.0, math.tau)
+        if asymmetry > 0.0:
+            # Bias droplet placement forward so no drops fly behind the
+            # impact when the hit is grazing.
+            angle = rng.uniform(-math.pi * (1.0 - asymmetry * 0.8),
+                                 math.pi * (1.0 - asymmetry * 0.8))
+        else:
+            angle = rng.uniform(0.0, math.tau)
         dist = base_radius * rng.uniform(droplet_min_dist, droplet_max_dist)
+        dist *= _forward_mult(angle)
         r = base_radius * rng.uniform(0.06, 0.16)
         d = _create_droplet_facet(f"{name}_drop{i}", r, rng)
         cmds.setAttr(f"{d}.translateX", dist * math.cos(angle))
@@ -109,8 +132,10 @@ def _create_splash_facet(
 
 
 def _create_default_splat_mesh(name: str, base_radius: float = 1.0,
+                                asymmetry: float = 0.0,
                                 seed: Optional[int] = None) -> str:
-    return _create_splash_facet(name=name, base_radius=base_radius, seed=seed)
+    return _create_splash_facet(name=name, base_radius=base_radius,
+                                asymmetry=asymmetry, seed=seed)
 
 
 # --------------------------------------------------------------------------- #
@@ -180,6 +205,8 @@ def create_splat(
     stretch_along_tangent: float = 1.0,
     stretch_perp_tangent: float = 1.0,
     tangent_direction: Optional[Vec3] = None,
+    forward_offset: float = 0.0,
+    shape_asymmetry: float = 0.0,
     rotation_jitter_degrees: float = 0.0,
     seed: Optional[int] = None,
 ) -> str:
@@ -199,6 +226,18 @@ def create_splat(
         World-space direction along which to align local +X. Usually
         the projectile's tangential velocity at impact. If omitted the
         splat picks a random rotation around the normal instead.
+    forward_offset : float
+        Distance to shift the splat's spawn position along
+        ``tangent_direction`` after applying the surface-normal offset.
+        Set to ``base_scale * stretch_along_tangent`` for "impact at
+        back edge, splash trails forward" (the physically-plausible
+        behavior for a projectile whose momentum keeps carrying paint
+        along the surface). No-op when ``tangent_direction`` is None.
+    shape_asymmetry : float (0..1)
+        Only meaningful for the procedural default shape: biases the
+        spike lengths and satellite droplet placement so more of the
+        material extends forward (+X) than backward (-X). 0 =
+        radially symmetric, 1 = strong teardrop.
     """
     if cmds is None or _om is None:
         raise RuntimeError("create_splat must run inside Maya.")
@@ -213,19 +252,27 @@ def create_splat(
                 pass
         splat = dup
     else:
-        splat = _create_default_splat_mesh(name, base_radius=1.0, seed=seed)
+        splat = _create_default_splat_mesh(name, base_radius=1.0,
+                                           asymmetry=shape_asymmetry,
+                                           seed=seed)
 
     if parent:
         splat = cmds.parent(splat, parent)[0]
 
-    # Position (with normal offset to avoid Z-fight)
+    # Position with normal offset (avoid Z-fight) plus forward-tangent
+    # offset (impact at back edge of the splat when grazing).
     n_len = math.sqrt(normal[0] ** 2 + normal[1] ** 2 + normal[2] ** 2) or 1.0
     nx, ny, nz = normal[0] / n_len, normal[1] / n_len, normal[2] / n_len
-    cmds.xform(splat, ws=True, t=(
-        position[0] + nx * surface_offset,
-        position[1] + ny * surface_offset,
-        position[2] + nz * surface_offset,
-    ))
+    pos_x = position[0] + nx * surface_offset
+    pos_y = position[1] + ny * surface_offset
+    pos_z = position[2] + nz * surface_offset
+    if tangent_direction is not None and forward_offset != 0.0:
+        tx, ty, tz = tangent_direction
+        t_len = math.sqrt(tx * tx + ty * ty + tz * tz) or 1.0
+        pos_x += (tx / t_len) * forward_offset
+        pos_y += (ty / t_len) * forward_offset
+        pos_z += (tz / t_len) * forward_offset
+    cmds.xform(splat, ws=True, t=(pos_x, pos_y, pos_z))
 
     _orient_transform_to_normal(splat, (nx, ny, nz))
 
@@ -293,14 +340,20 @@ def compute_splat_stretch(
     normal: Vec3,
     max_stretch: float = 1.8,
     min_squeeze: float = 0.55,
-) -> Tuple[float, float, Optional[Tuple[float, float, float]]]:
+) -> Tuple[float, float, Optional[Tuple[float, float, float]], float]:
     """From impact velocity + surface normal, return
-    ``(stretch_along_tangent, stretch_perp_tangent, tangent_direction_world)``.
+    ``(stretch_along_tangent, stretch_perp_tangent,
+    tangent_direction_world, grazing_factor)``.
 
     * Perpendicular hit (velocity antiparallel to normal, no tangential
-      component) → ``(1.0, 1.0, None)`` — symmetric splash.
-    * Grazing hit → stretch approaches ``max_stretch`` along tangent and
-      squeeze approaches ``min_squeeze`` across it.
+      component) → ``(1.0, 1.0, None, 0.0)`` — symmetric splash.
+    * Grazing hit → stretch approaches ``max_stretch`` along tangent,
+      squeeze approaches ``min_squeeze`` across it, grazing → 1.0.
+
+    ``grazing`` (0..1) is the fraction of velocity that lies in the
+    surface plane. Callers use it to bias splat position and shape
+    forward — a fully perpendicular hit has no "forward" to bias
+    toward, a grazing hit has all of it.
     """
     vx, vy, vz = float(velocity[0]), float(velocity[1]), float(velocity[2])
     nx, ny, nz = float(normal[0]), float(normal[1]), float(normal[2])
@@ -311,10 +364,10 @@ def compute_splat_stretch(
     tan_mag = math.sqrt(tx * tx + ty * ty + tz * tz)
     v_mag = math.sqrt(vx * vx + vy * vy + vz * vz)
     if v_mag < 1e-6:
-        return 1.0, 1.0, None
+        return 1.0, 1.0, None, 0.0
     grazing = min(1.0, tan_mag / v_mag)
     stretch = 1.0 + grazing * (max_stretch - 1.0)
     squeeze = 1.0 - grazing * (1.0 - min_squeeze)
     if tan_mag < 1e-6:
-        return stretch, squeeze, None
-    return stretch, squeeze, (tx / tan_mag, ty / tan_mag, tz / tan_mag)
+        return stretch, squeeze, None, grazing
+    return stretch, squeeze, (tx / tan_mag, ty / tan_mag, tz / tan_mag), grazing
