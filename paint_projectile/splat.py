@@ -146,33 +146,27 @@ def compute_splash_geometry(
     return {"blob": blob, "rays": rays, "droplets": droplets}
 
 
-def _extrude_facet(node: str, thickness: float) -> None:
-    """Give a flat facet real dome-shaped volume by extruding it in
-    several small steps, each with a progressively tighter taper. The
-    resulting side profile is a rounded pillow — thickest at the
-    centre, curving smoothly down to zero at the perimeter — instead
-    of the straight prism you'd get from a single-shot extrude.
+def _extrude_facet(node: str, thickness: float,
+                   smooth_divisions: int = 1) -> None:
+    """Give a flat facet real dome-shaped volume, then Catmull-Clark
+    subdivide once so the resulting side profile is a genuinely curved
+    surface rather than a stack of straight rings.
 
-    Steps are chosen so the total height still equals ``thickness`` and
-    the ratio of consecutive scales approximates a cos(θ) fall-off
-    (dense taper near the top, gentle near the base). Final polySoftEdge
-    smooths shading across the resulting side rings.
+    Two-step extrude first (base ring + tapered cap) creates the raw
+    silhouette; polySmooth then rounds every corner into a C1 curve —
+    the paint reads as a wet blob rather than as a stack of prisms.
+    Set ``smooth_divisions=0`` to skip subdivision (returns the raw
+    two-step polygonal profile) when polygon budget matters.
     """
     if thickness <= 0.0:
         return
     faces = f"{node}.f[*]"
 
-    # (height fraction of `thickness`, relative scale applied to top
-    # face each step). Cumulative scale after all steps ≈ 0.94 · 0.78
-    # · 0.55 · 0.30 ≈ 0.12 — nearly a point at the summit, so the
-    # profile domes without leaving a visible flat top.
-    steps = (
-        (0.32, 0.94),   # base → lower shoulder: barely taper
-        (0.30, 0.80),   # lower → mid
-        (0.24, 0.60),   # mid → upper
-        (0.14, 0.35),   # upper → cap
-    )
-    for height_frac, scale_frac in steps:
+    # Two extrude steps: a mostly-vertical base (~60 % of thickness,
+    # only a slight taper) followed by a hard taper cap (~40 %,
+    # scaled to 45 %). After subdivision this becomes a rounded dome
+    # instead of a straight prism.
+    for height_frac, scale_frac in ((0.60, 0.88), (0.40, 0.45)):
         step_h = thickness * height_frac
         try:
             cmds.polyExtrudeFacet(faces, ltz=step_h,
@@ -190,12 +184,32 @@ def _extrude_facet(node: str, thickness: float) -> None:
             except Exception:
                 break
 
-    # Smooth shading so the multi-step side rings read as one
-    # continuous curved surface instead of a stack of visible bands.
-    try:
-        cmds.polySoftEdge(node, angle=180, ch=False)
-    except Exception:
-        pass
+    if smooth_divisions > 0:
+        try:
+            cmds.polySmooth(
+                node,
+                divisions=int(smooth_divisions),
+                subdivisionType=0,     # 0 = Catmull-Clark
+                continuity=1.0,
+                keepBorder=0,
+                keepHardEdge=0,
+                keepMapBorders=0,
+                smoothUVs=0,
+                ch=False,
+            )
+        except Exception:
+            # Fallback if polySmooth is unavailable — leave the
+            # blocky profile but soften shading so it's at least
+            # not sharp.
+            try:
+                cmds.polySoftEdge(node, angle=180, ch=False)
+            except Exception:
+                pass
+    else:
+        try:
+            cmds.polySoftEdge(node, angle=180, ch=False)
+        except Exception:
+            pass
 
 
 def _create_splash_facet(
