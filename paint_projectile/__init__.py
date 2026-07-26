@@ -31,4 +31,4 @@ __all__ = [
     "generate_positions",
 ]
 
-__version__ = "0.1.0"
+__version__ = "0.1.2"

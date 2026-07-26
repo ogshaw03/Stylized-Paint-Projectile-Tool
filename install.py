@@ -1,10 +1,9 @@
-"""One-shot installer for the Stylized Paint Projectile Tool.
+"""One-shot installer / updater for the Stylized Paint Projectile Tool.
 
 Two ways to run this file from inside Maya:
 
 1) Drag ``install.py`` from your file browser into any Maya viewport.
-   Maya calls ``onMayaDroppedPythonFile`` automatically and the install
-   runs.
+   Maya calls ``onMayaDroppedPythonFile`` automatically.
 
 2) From the Script Editor (Python tab)::
 
@@ -12,26 +11,24 @@ Two ways to run this file from inside Maya:
 
 Both do the same thing:
 
-* Copy (or download) the ``paint_projectile/`` package and
+* Copy (or download from GitHub) the ``paint_projectile/`` package and
   ``paint_projectile_launch.py`` into your Maya user scripts folder
   (``cmds.internalVar(userScriptDir=True)``).
-* Ensure that folder is on ``sys.path`` for the current session.
-* Add a ``PaintFX`` shelf button to the active shelf.
-
-If ``install.py`` is run standalone (downloaded by itself without the rest
-of the repo), the source files are fetched from GitHub over HTTPS. If run
-from inside a checkout of the repository, the local files are used
-instead.
-
-After install you can launch the tool with either the shelf button or::
-
-    import paint_projectile_launch
-    paint_projectile_launch.show()
+* Verify the installed version by reading ``__version__`` back off disk.
+* Force-flush any previously loaded ``paint_projectile*`` modules from
+  ``sys.modules`` so the very next import picks up the fresh code —
+  no Maya restart needed.
+* Close any tool window that was already open.
+* Add / refresh a ``PaintFX`` shelf button on the active shelf. The
+  button's command also flushes ``sys.modules`` on every click so
+  dropping a newer ``install.py`` in future always takes effect on the
+  next button press.
 """
 
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import sys
 
@@ -41,8 +38,6 @@ _PACKAGE = "paint_projectile"
 _LAUNCHER = "paint_projectile_launch.py"
 _SHELF_BUTTON_LABEL = "PaintFX"
 
-# GitHub source for the standalone / drag-and-drop-only case, where
-# install.py was downloaded by itself.
 _GITHUB_OWNER = "ogshaw03"
 _GITHUB_REPO = "Stylized-Paint-Projectile-Tool"
 _GITHUB_BRANCH = "main"
@@ -59,58 +54,186 @@ _REMOTE_FILES = (
 )
 
 
+# --------------------------------------------------------------------------- #
+# Force-overwrite helpers (Windows-safe)
+# --------------------------------------------------------------------------- #
+
+def _force_writable(path: str) -> None:
+    """Clear read-only bit so we can overwrite / remove."""
+    import stat
+    try:
+        os.chmod(path, stat.S_IWRITE | stat.S_IREAD)
+    except Exception:
+        pass
+
+
+def _force_rmtree(path: str) -> None:
+    """Remove a directory tree, clearing read-only on Windows and retrying
+    on transient locks."""
+    import stat
+    import time
+
+    if not os.path.exists(path):
+        return
+
+    def _on_error(func, p, exc_info):
+        try:
+            os.chmod(p, stat.S_IWRITE)
+            func(p)
+        except Exception:
+            pass
+
+    for attempt in range(3):
+        try:
+            shutil.rmtree(path, onerror=_on_error)
+            if not os.path.exists(path):
+                return
+        except Exception as exc:
+            last_exc = exc
+        time.sleep(0.2)
+
+    if os.path.exists(path):
+        # Last-ditch: try to at least wipe individual files so a fresh copy
+        # can overlay the folder even if the directory itself can't be
+        # removed.
+        for root, _dirs, files in os.walk(path):
+            for name in files:
+                p = os.path.join(root, name)
+                try:
+                    _force_writable(p)
+                    os.remove(p)
+                except Exception:
+                    pass
+        # And try one more time.
+        try:
+            shutil.rmtree(path, onerror=_on_error)
+        except Exception:
+            pass
+
+    if os.path.exists(path):
+        raise RuntimeError(
+            f"Could not remove existing folder {path!r}. Close any editor "
+            "or explorer window that has it open, then re-drag install.py."
+        )
+
+
+def _atomic_write_bytes(target: str, data: bytes) -> None:
+    """Write ``data`` to ``target``, overwriting any existing file, even
+    read-only ones. Uses a temp file + os.replace for an atomic swap so
+    a half-written file never gets left behind."""
+    os.makedirs(os.path.dirname(target), exist_ok=True)
+    if os.path.exists(target):
+        _force_writable(target)
+        # os.replace overwrites, but only if the target is writable.
+    tmp = target + ".tmp_install"
+    with open(tmp, "wb") as fh:
+        fh.write(data)
+        fh.flush()
+        try:
+            os.fsync(fh.fileno())
+        except Exception:
+            pass
+    os.replace(tmp, target)
+
+
+def _atomic_copy_file(src: str, dst: str) -> None:
+    with open(src, "rb") as fh:
+        data = fh.read()
+    _atomic_write_bytes(dst, data)
+
+
+# --------------------------------------------------------------------------- #
+# File acquisition
+# --------------------------------------------------------------------------- #
+
 def _copy_from_local(dest_root: str) -> None:
     src_pkg = os.path.join(_REPO_ROOT, _PACKAGE)
     dst_pkg = os.path.join(dest_root, _PACKAGE)
-    if os.path.isdir(dst_pkg):
-        shutil.rmtree(dst_pkg)
-    shutil.copytree(src_pkg, dst_pkg)
+
+    _force_rmtree(dst_pkg)
+    os.makedirs(dst_pkg, exist_ok=True)
+    for root, _dirs, files in os.walk(src_pkg):
+        for name in files:
+            rel = os.path.relpath(os.path.join(root, name), src_pkg)
+            _atomic_copy_file(os.path.join(root, name),
+                              os.path.join(dst_pkg, rel))
 
     src_launcher = os.path.join(_REPO_ROOT, _LAUNCHER)
     dst_launcher = os.path.join(dest_root, _LAUNCHER)
-    shutil.copy2(src_launcher, dst_launcher)
+    _atomic_copy_file(src_launcher, dst_launcher)
 
 
 def _download_from_github(dest_root: str) -> None:
-    """Fetch the package files from GitHub when the local package folder
-    isn't sitting next to install.py (common case: user downloaded only
-    install.py)."""
-    try:
-        from urllib.request import urlopen  # Py3
-    except ImportError:  # pragma: no cover - Maya 2023 is Py3 only
-        from urllib2 import urlopen  # type: ignore
+    from urllib.request import Request, urlopen
 
     dst_pkg = os.path.join(dest_root, _PACKAGE)
-    if os.path.isdir(dst_pkg):
-        shutil.rmtree(dst_pkg)
-    os.makedirs(dst_pkg)
+    _force_rmtree(dst_pkg)
+    os.makedirs(dst_pkg, exist_ok=True)
+
+    # Cache-busting query so a corporate proxy / browser cache never
+    # serves a stale copy from the last download attempt.
+    cache_bust = f"?_={os.getpid()}"
 
     for rel_path in _REMOTE_FILES:
-        url = f"{_GITHUB_RAW}/{rel_path}"
+        url = f"{_GITHUB_RAW}/{rel_path}{cache_bust}"
         target = os.path.join(dest_root, rel_path.replace("/", os.sep))
-        os.makedirs(os.path.dirname(target), exist_ok=True)
         print(f"[paint_projectile] downloading {url}")
         try:
-            response = urlopen(url, timeout=30)
-            data = response.read()
-        except Exception as exc:  # network/SSL failure — surface clearly
+            req = Request(url, headers={"Cache-Control": "no-cache",
+                                        "Pragma": "no-cache"})
+            data = urlopen(req, timeout=30).read()
+        except Exception as exc:
             raise RuntimeError(
                 f"Failed to download {url}: {exc}. "
                 "Check your internet connection, or download the full "
                 "repository ZIP from GitHub and run install.py from its root."
             )
-        with open(target, "wb") as fh:
-            fh.write(data)
+        _atomic_write_bytes(target, data)
+        print(f"[paint_projectile]   -> {target} ({len(data)} bytes)")
 
 
 def _copy_package(dest_root: str) -> None:
     src_pkg = os.path.join(_REPO_ROOT, _PACKAGE)
     src_launcher = os.path.join(_REPO_ROOT, _LAUNCHER)
     if os.path.isdir(src_pkg) and os.path.isfile(src_launcher):
+        print(f"[paint_projectile] copying local files from {_REPO_ROOT}")
         _copy_from_local(dest_root)
     else:
+        print("[paint_projectile] no local package next to install.py — "
+              "downloading from GitHub")
         _download_from_github(dest_root)
 
+
+def _verify_install(dest_root: str) -> None:
+    """Sanity-check that every expected file exists and is non-empty."""
+    missing = []
+    for rel in _REMOTE_FILES:
+        p = os.path.join(dest_root, rel.replace("/", os.sep))
+        if not os.path.isfile(p) or os.path.getsize(p) == 0:
+            missing.append(rel)
+    if missing:
+        raise RuntimeError(
+            "Install verification failed — missing/empty files: "
+            + ", ".join(missing)
+        )
+
+
+def _read_installed_version(dest_root: str) -> str:
+    init_path = os.path.join(dest_root, _PACKAGE, "__init__.py")
+    try:
+        with open(init_path, "r", encoding="utf-8") as fh:
+            for line in fh:
+                m = re.match(r'\s*__version__\s*=\s*[\'"]([^\'"]+)[\'"]', line)
+                if m:
+                    return m.group(1)
+    except Exception:
+        pass
+    return "(unknown)"
+
+
+# --------------------------------------------------------------------------- #
+# Live-session refresh
+# --------------------------------------------------------------------------- #
 
 def _flush_imports() -> None:
     """Drop any previously imported copies so the freshly installed files
@@ -119,6 +242,35 @@ def _flush_imports() -> None:
         if mod_name == _PACKAGE or mod_name.startswith(_PACKAGE + "."):
             sys.modules.pop(mod_name, None)
     sys.modules.pop("paint_projectile_launch", None)
+
+
+def _close_existing_window() -> None:
+    """If a previous version left the tool window open, close it so the
+    next launch instantiates fresh UI from the new code."""
+    try:
+        from maya import cmds
+        for win in ("stylizedProjectileToolWin",):
+            if cmds.window(win, exists=True):
+                cmds.deleteUI(win)
+    except Exception:
+        pass
+
+
+# --------------------------------------------------------------------------- #
+# Shelf button
+# --------------------------------------------------------------------------- #
+
+_SHELF_BUTTON_CMD = (
+    "# Auto-generated by paint_projectile install.py — do not edit.\n"
+    "import sys\n"
+    "for _m in [_k for _k in sys.modules\n"
+    "           if _k == 'paint_projectile'\n"
+    "           or _k.startswith('paint_projectile.')\n"
+    "           or _k == 'paint_projectile_launch']:\n"
+    "    sys.modules.pop(_m, None)\n"
+    "import paint_projectile_launch\n"
+    "paint_projectile_launch.show()\n"
+)
 
 
 def _add_shelf_button() -> None:
@@ -131,7 +283,6 @@ def _add_shelf_button() -> None:
     if not current:
         return
 
-    # Remove any previous button with our label so re-installs don't stack.
     for child in cmds.shelfLayout(current, q=True, ca=True) or []:
         try:
             if cmds.shelfButton(child, q=True, label=True) == _SHELF_BUTTON_LABEL:
@@ -139,30 +290,42 @@ def _add_shelf_button() -> None:
         except Exception:
             pass
 
-    cmd = (
-        "import paint_projectile_launch\n"
-        "paint_projectile_launch.show()\n"
-    )
     cmds.shelfButton(
         parent=current,
         label=_SHELF_BUTTON_LABEL,
-        annotation="Stylized Paint Projectile Tool",
+        annotation="Stylized Paint Projectile Tool (auto-reloads on click)",
         image="pythonFamily.png",
         imageOverlayLabel="Paint",
-        command=cmd,
+        command=_SHELF_BUTTON_CMD,
         sourceType="python",
     )
 
 
+# --------------------------------------------------------------------------- #
+# Public entry points
+# --------------------------------------------------------------------------- #
+
+def _clean_pycache(dest_root: str) -> None:
+    """Wipe __pycache__ so Python re-compiles from the fresh .py files.
+    Stale .pyc files can otherwise linger and re-serve old bytecode."""
+    pycache = os.path.join(dest_root, _PACKAGE, "__pycache__")
+    _force_rmtree(pycache)
+
+
 def install() -> str:
-    """Perform the install. Returns the destination path."""
+    """Perform install / update. Returns the destination path."""
     from maya import cmds
 
     user_scripts = cmds.internalVar(userScriptDir=True).rstrip("/\\")
     if not os.path.isdir(user_scripts):
         os.makedirs(user_scripts)
 
+    prev_version = _read_installed_version(user_scripts)
+
+    _close_existing_window()
     _copy_package(user_scripts)
+    _clean_pycache(user_scripts)
+    _verify_install(user_scripts)
     _flush_imports()
 
     if user_scripts not in sys.path:
@@ -170,22 +333,30 @@ def install() -> str:
 
     _add_shelf_button()
 
-    print(f"[paint_projectile] installed to {user_scripts}")
+    new_version = _read_installed_version(user_scripts)
+
+    print("[paint_projectile] " + "=" * 55)
+    print(f"[paint_projectile] installed to: {user_scripts}")
+    print(f"[paint_projectile] previous version: {prev_version}")
+    print(f"[paint_projectile] current  version: {new_version}")
+    print(f"[paint_projectile] shelf button '{_SHELF_BUTTON_LABEL}' refreshed")
+    print("[paint_projectile] " + "=" * 55)
+
     try:
         cmds.confirmDialog(
             title="Stylized Paint Projectile Tool",
             message=(
                 "Installed to:\n"
                 f"{user_scripts}\n\n"
-                f"A '{_SHELF_BUTTON_LABEL}' shelf button was added to the "
-                "active shelf. Click it to launch, or run:\n\n"
-                "  import paint_projectile_launch\n"
-                "  paint_projectile_launch.show()"
+                f"Version: {prev_version}  →  {new_version}\n\n"
+                f"The '{_SHELF_BUTTON_LABEL}' shelf button has been "
+                "refreshed and now auto-reloads the tool on every click, "
+                "so future re-installs take effect immediately.\n\n"
+                "Click the shelf button to launch."
             ),
             button=["OK"],
         )
     except Exception:
-        # confirmDialog fails in batch mode; the print above is enough.
         pass
     return user_scripts
 
@@ -196,14 +367,13 @@ def onMayaDroppedPythonFile(*_args) -> None:
 
 
 # When invoked via ``exec(open(...).read())`` from the Script Editor,
-# neither ``__name__ == "__main__"`` nor ``onMayaDroppedPythonFile`` gets
-# a chance to fire on its own — so just run the install.
-# When dragged, Maya loads this module and *then* calls
-# ``onMayaDroppedPythonFile``; ``install()`` is idempotent (it wipes any
-# previous copy before copying), so a double-run is harmless.
+# neither ``__name__ == "__main__"`` nor ``onMayaDroppedPythonFile`` fires
+# on its own — so run the install here. On drag-and-drop, Maya loads this
+# module (module-level runs) *and* calls ``onMayaDroppedPythonFile``, so
+# install() runs twice; it is idempotent (previous install is wiped
+# before copy), so a double-run is harmless.
 try:
     from maya import cmds as _cmds  # noqa: F401
     install()
 except ImportError:
-    # Being imported outside of Maya (e.g. during unit tests) — no-op.
     pass
