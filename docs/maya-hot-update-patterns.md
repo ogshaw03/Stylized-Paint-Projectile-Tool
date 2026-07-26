@@ -1046,42 +1046,171 @@ update 関連の関数 (`_resolve_latest_sha`, `update_from_github`, `_run_updat
 `_reopen_after_update`) と `show()` の外枠 (window / footer / Update ボタン) は
 **触らない**。
 
-### 6-5. 追加モジュールを作る場合
+### 6-5. 複数ファイル構成 (パッケージ化) — 完全にサポート
 
-`my_tool.py` が肥大化してきたら追加ファイルに分割することになる。
-その場合の作業:
+**複数ファイルに分ける構成は完全に想定内、むしろ推奨される場面が多い**。
+§5-B の single-file は最小スタート地点というだけで、以下の状況では迷わず
+package 化して OK:
 
-1. `my_tool/` フォルダを作って `__init__.py` + サブモジュール群にリファクタ
-   (single-file → package 化)
-2. `install.py` の `_fetch_module` を「単一ファイルダウンロード」から
-   「ファイル一覧ダウンロード」に拡張 → `_REMOTE_FILES` タプルを追加
-3. **新規モジュールを追加したら必ず `_REMOTE_FILES` にも追記** (§1-10 で
-   踏んだ落とし穴の再発防止)
-4. `_flush_imports` をパッケージ全体をポップするパターンに変更
+- ロジックが 500〜800 行を超えて 1 ファイルが読みづらい
+- UI とコアロジックを分離したい
+- ユニットテストしたい (Maya 非依存の pure Python モジュールを分離)
+- チーム開発でコンフリクトを減らしたい
+- 別のツールでも共有したいユーティリティが出てきた
 
-拡張後の実装イメージ (パッケージ + 複数モジュール):
+#### 移行後のファイル構成
+
+```
+Before (single-file):              After (package):
+    install.py                        install.py
+    my_tool.py                        my_tool/
+                                          __init__.py     ← __version__ + show の再export
+                                          ui.py           ← UI + Update フロー
+                                          core.py         ← ロジック
+                                          (追加モジュール...)
+```
+
+エンドユーザーから見たインストール体験は **一切変わらない** (install.py
+をドラッグ → 完了)。シェルフボタンのコマンドも `import my_tool; my_tool.show()`
+のまま。
+
+#### 6-5-A. `install.py` に必要な変更 (4 箇所)
+
+**① `_REMOTE_FILES` タプルを追加、`_fetch_module` を loop 化**
 
 ```python
-# install.py の変更点だけ抜粋
 _REMOTE_FILES = (
-    f"{_PACKAGE}/__init__.py",
-    f"{_PACKAGE}/ui.py",
-    f"{_PACKAGE}/core.py",
-    # 新規モジュール追加時はここに追記
+    f"{_MODULE}/__init__.py",
+    f"{_MODULE}/ui.py",
+    f"{_MODULE}/core.py",
+    # ← 新規モジュール追加時はここに追記 (§1-10)
 )
 
 def _fetch_module(dest_root):
+    from urllib.request import Request, urlopen
     sha = _resolve_latest_sha()
     for rel in _REMOTE_FILES:
         url = f"{_GITHUB_RAW_BASE}/{sha}/{rel}"
         target = os.path.join(dest_root, rel.replace("/", os.sep))
-        # ... _atomic_write_bytes(target, urllib.request.urlopen(url).read())
+        req = Request(url, headers={
+            "Cache-Control": "no-cache",
+            "User-Agent": f"{_MODULE}-installer/{sha[:10]}",
+        })
+        try:
+            data = urlopen(req, timeout=30).read()
+        except Exception as exc:
+            raise RuntimeError(f"Failed to download {url}: {exc}")
+        _atomic_write_bytes(target, data)
+        print(f"[{_MODULE}]   → {target} ({len(data)} bytes)")
+```
 
+**② `_clean_pycache` をパッケージ内 pycache に対応**
+
+```python
+def _clean_pycache(dest_root):
+    # トップレベル (single-file 版の残骸) + パッケージ内 両方
+    for pycache in (
+        os.path.join(dest_root, "__pycache__"),
+        os.path.join(dest_root, _MODULE, "__pycache__"),
+    ):
+        if os.path.isdir(pycache):
+            for name in os.listdir(pycache):
+                if name.endswith(".pyc"):
+                    p = os.path.join(pycache, name)
+                    try:
+                        _force_writable(p)
+                        os.remove(p)
+                    except Exception:
+                        pass
+```
+
+**③ `_flush_imports` をパッケージ全体に**
+
+```python
 def _flush_imports():
     for name in list(sys.modules):
-        if name == _PACKAGE or name.startswith(_PACKAGE + "."):
+        if name == _MODULE or name.startswith(_MODULE + "."):
             sys.modules.pop(name, None)
 ```
+
+**④ `_verify_install` を全ファイル存在チェックに**
+
+```python
+def _verify_install(dest_root):
+    missing = []
+    for rel in _REMOTE_FILES:
+        p = os.path.join(dest_root, rel.replace("/", os.sep))
+        if not os.path.isfile(p) or os.path.getsize(p) == 0:
+            missing.append(rel)
+    if missing:
+        raise RuntimeError(
+            "Install verification failed — missing/empty: "
+            + ", ".join(missing))
+```
+
+**⑤ `_read_installed_version` のパス変更**
+
+```python
+def _read_installed_version(dest_root):
+    p = os.path.join(dest_root, _MODULE, "__init__.py")   # ← 変更
+    # ... 以下は同じ
+```
+
+#### 6-5-B. パッケージ本体 (`my_tool/__init__.py`) の最小構成
+
+```python
+# my_tool/__init__.py
+"""Package entry point — keeps the shelf button command unchanged."""
+
+__version__ = "0.1.0"
+
+# Re-export show() so `import my_tool; my_tool.show()` still works.
+from .ui import show
+```
+
+`show()` 本体、Update ボタン関連 (`update_from_github` / `_run_update` /
+`_reopen_after_update`)、`_build_body()` は全て `my_tool/ui.py` に置く。
+中身のコードは §5-B の my_tool.py とほぼ同じ。違いは `__version__` を
+`from . import __version__ as _pkg_version` で読み込む点だけ。
+
+#### 6-5-C. 注意事項 (踏みやすい順)
+
+1. **新規モジュール追加時は `_REMOTE_FILES` にも必ず追記**  (§1-10 の再発防止)
+   → CI があればインストール後の import smoke test を通すと確実
+2. **`__init__.py` に `from .ui import show` を書く** — シェルフボタンの
+   コマンドを変えずに済む (書き忘れると `AttributeError: module has no
+   attribute 'show'` になる)
+3. **サブモジュール間の circular import に注意** — `ui.py` が `core.py`
+   を import し、`core.py` が `ui.py` を import すると壊れる。**UI 層と
+   ロジック層の依存を一方向に保つ** のが原則
+4. **`__version__` は `__init__.py` に置き、install.py 側も
+   `_read_installed_version` の path を `<MODULE>/__init__.py` に修正**
+5. **バージョン整合性** — Update 中にネットワーク断が起きると一部
+   ファイルだけ新版になる可能性。`_verify_install` の全ファイル
+   存在チェックを必ず入れる。§1-4 の atomic write は各ファイル単位
+   でしか保証しないので、パッケージ全体の atomicity は別途担保が必要
+6. **ダウンロード時間**: N ファイル = N HTTP リクエスト。10 ファイル
+   程度なら 2〜3 秒。100 ファイル超で気になり始める。並列化するなら
+   `concurrent.futures.ThreadPoolExecutor(max_workers=8)` を検討
+7. **モジュール名の衝突**: `_MODULE` が Maya 標準モジュール名や他ツール
+   と被ると `import` の解決順で事故る。`my_tool` のような汎用名は避け、
+   プロジェクト固有のプレフィックスを付ける (`acme_paint_projectile` 等)
+8. **サブモジュールに Maya 依存 (from maya import cmds) を書くと unit
+   test で import できなくなる**。pure Python にしたいモジュールは
+   `try: from maya import cmds` パターンで guard するか、Maya 依存を
+   別ファイルに切り出す
+
+#### 6-5-D. いつ package 化するか判断
+
+| 状況 | 推奨構成 |
+|---|---|
+| 総行数 ~500 行以下 / UI のみ / 外部依存少 | **single-file 維持** (§5-B のまま) |
+| 500〜1500 行 / UI + 純ロジック分離したい | UI/core の **2 モジュール package** |
+| 1500 行超 / 単体テスト書きたい / 複数開発者 | **フル package** (ui / core / io / utils / ...) |
+
+single-file から package への移行は破壊的変更ではない (エンドユーザーの
+install 体験は同じ)。**あとから移行しても Update ボタンで自然に切り替わる**
+ので、最初は single-file で始めて、必要になった段階で分割するのがコスト最小。
 
 ---
 
