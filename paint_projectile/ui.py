@@ -13,7 +13,10 @@ from __future__ import annotations
 from typing import Optional
 
 from . import __version__ as _pkg_version
+from . import splat as _splat
 from . import system as _system
+
+_PREVIEW_GROUP = "paint_projectile_splat_PREVIEW_GRP"
 
 _GITHUB_OWNER = "ogshaw03"
 _GITHUB_REPO = "Stylized-Paint-Projectile-Tool"
@@ -255,6 +258,92 @@ def _run_update() -> None:
     cmds.evalDeferred(_reopen_after_update, lowestPriority=True)
 
 
+def _clear_splat_preview() -> None:
+    if cmds.objExists(_PREVIEW_GROUP):
+        cmds.delete(_PREVIEW_GROUP)
+
+
+def _preview_splat(fields) -> None:
+    """Spawn a static splat at the world origin using the current SPLAT
+    slider values so the animator can dial in the look without running
+    a full GENERATE. Re-clicking replaces the previous preview.
+
+    Visualises the *fully-grazing* case (velocity purely tangential to
+    the surface) so every slider that biases toward the direction of
+    travel — Grazing Stretch, Grazing Squeeze, Forward Bias — has
+    maximum visible effect. Perpendicular hits will always be milder
+    than this preview."""
+    _clear_splat_preview()
+
+    splat_scale = cmds.floatSliderGrp(fields["splatScale"], q=True, v=True)
+    splat_offset = cmds.floatSliderGrp(fields["splatOffset"], q=True, v=True)
+    splat_stretch = cmds.floatSliderGrp(fields["splatStretch"], q=True, v=True)
+    splat_squeeze = cmds.floatSliderGrp(fields["splatSqueeze"], q=True, v=True)
+    splat_forward_bias = cmds.floatSliderGrp(fields["splatForwardBias"],
+                                              q=True, v=True)
+    splat_jitter = cmds.floatSliderGrp(fields["splatJitter"], q=True, v=True)
+
+    templates = _parse_csv(cmds.textFieldButtonGrp(
+        fields["splatTemplates"], q=True, text=True))
+
+    # Use the picked projectile mesh (if any) to size the splat, so the
+    # preview reflects the actual final size. Fall back to unit radius.
+    mesh = cmds.textFieldButtonGrp(fields["mesh"], q=True, text=True).strip()
+    if mesh and cmds.objExists(mesh):
+        try:
+            projectile_radius = _splat.projectile_bounding_radius(mesh)
+        except Exception:
+            projectile_radius = 1.0
+    else:
+        projectile_radius = 1.0
+    base_scale = projectile_radius * splat_scale
+
+    # Fully grazing synthetic hit: normal +Y, tangent +X, grazing = 1.
+    forward_offset = (1.0 * splat_stretch * base_scale
+                      * float(splat_forward_bias))
+    shape_asymmetry = 1.0 * float(splat_forward_bias)
+
+    grp = cmds.group(em=True, n=_PREVIEW_GROUP)
+
+    splat_name = _splat.create_splats_from_candidates(
+        base_name="paint_projectile_splat_preview",
+        position=(0.0, 0.0, 0.0),
+        normal=(0.0, 1.0, 0.0),
+        template_candidates=templates,
+        parent=grp,
+        surface_offset=splat_offset,
+        spawn_frame=int(cmds.currentTime(q=True)),
+        grow_frames=1,
+        base_scale=base_scale,
+        stretch_along_tangent=splat_stretch,
+        stretch_perp_tangent=splat_squeeze,
+        tangent_direction=(1.0, 0.0, 0.0),
+        forward_offset=forward_offset,
+        shape_asymmetry=shape_asymmetry,
+        rotation_jitter_degrees=splat_jitter,
+        seed=None,   # random each preview so shape variation is visible
+    )
+
+    # Strip the grow-in animation so the preview stays fully visible on
+    # any frame — the animator wants to inspect shape, not scrub time.
+    for attr in ("scaleX", "scaleY", "scaleZ", "visibility"):
+        try:
+            cmds.cutKey(splat_name, at=attr, clear=True)
+        except Exception:
+            pass
+    cmds.setAttr(f"{splat_name}.scaleX", splat_stretch * base_scale)
+    cmds.setAttr(f"{splat_name}.scaleY", base_scale)
+    cmds.setAttr(f"{splat_name}.scaleZ", splat_squeeze * base_scale)
+    cmds.setAttr(f"{splat_name}.visibility", 1)
+
+    cmds.select(splat_name, r=True)
+    cmds.inViewMessage(
+        amg=(f"Splat preview at origin ・ size ≈ "
+             f"<hl>{base_scale:.2f}</hl> ・ +X = ball travel direction"),
+        pos="topCenter", fade=True,
+    )
+
+
 def _reopen_after_update() -> None:
     import traceback
     try:
@@ -400,6 +489,19 @@ def show() -> str:
         v=12.0, pre=1,
         annotation=("Random rotation (deg) around the surface normal, "
                     "so repeat splats don't read as identical shapes."))
+
+    cmds.separator(h=4, style="none")
+    cmds.rowLayout(nc=2, adj=1, cw2=(200, 130))
+    cmds.button(l="Preview Splat", h=26,
+                annotation=("Spawn a static splat at the world origin "
+                            "using the current SPLAT settings + a "
+                            "synthetic fully-grazing hit (normal +Y, "
+                            "tangent +X). Re-click to reroll shape."),
+                c=lambda *_: _preview_splat(fields))
+    cmds.button(l="Clear Preview", h=26,
+                c=lambda *_: _clear_splat_preview())
+    cmds.setParent("..")
+
     cmds.setParent("..")
     cmds.setParent("..")
 

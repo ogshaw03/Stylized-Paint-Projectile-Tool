@@ -52,36 +52,96 @@ def _create_droplet_facet(name: str, radius: float, rng: random.Random) -> str:
     return cmds.polyCreateFacet(p=verts, ch=False, n=name)[0]
 
 
+def _create_blob_facet(
+    name: str,
+    base_radius: float,
+    num_points: int,
+    irregularity: float,
+    rng: random.Random,
+    forward_mult,
+) -> str:
+    """Rounded but irregular amoeba-shaped blob — the main body of a
+    real ink splash. Radius per vertex is base_radius perturbed by a
+    sum of low-amplitude sinusoidal harmonics with random phase, so
+    the silhouette wobbles smoothly instead of resolving into a
+    recognisable star."""
+    harmonics = [(2, 0.55), (3, 0.35), (5, 0.20), (7, 0.10)]
+    phases = [rng.uniform(0.0, math.tau) for _ in harmonics]
+
+    verts = []
+    for i in range(num_points):
+        angle = (i / num_points) * math.tau
+        noise = 0.0
+        for (n_h, amp), phase in zip(harmonics, phases):
+            noise += amp * math.sin(n_h * angle + phase)
+        r = base_radius * (1.0 + irregularity * noise)
+        r *= forward_mult(angle)
+        verts.append((r * math.cos(angle), 0.0, r * math.sin(angle)))
+    return cmds.polyCreateFacet(p=verts, ch=False, n=name)[0]
+
+
+def _create_ray_facet(
+    name: str,
+    angle: float,
+    inner_radius: float,
+    outer_radius: float,
+    width_degrees: float,
+    tip_offset_degrees: float = 0.0,
+) -> str:
+    """A thin triangular streak radiating from the origin. The base
+    end sits slightly inside the main blob at ``inner_radius``; the
+    pointed tip lands at ``outer_radius`` along ``angle`` (plus an
+    optional ``tip_offset_degrees`` so the ray can slightly curve /
+    off-axis, which looks more natural than perfectly radial rays)."""
+    half_w = math.radians(width_degrees) * 0.5
+    tip_ang = angle + math.radians(tip_offset_degrees)
+    tip = (outer_radius * math.cos(tip_ang),
+           0.0,
+           outer_radius * math.sin(tip_ang))
+    left = (inner_radius * math.cos(angle + half_w),
+            0.0,
+            inner_radius * math.sin(angle + half_w))
+    right = (inner_radius * math.cos(angle - half_w),
+             0.0,
+             inner_radius * math.sin(angle - half_w))
+    return cmds.polyCreateFacet(p=[left, tip, right], ch=False, n=name)[0]
+
+
 def _create_splash_facet(
     name: str,
     base_radius: float,
-    num_spikes: int = 10,
-    spike_length: float = 0.50,
-    valley_depth: float = 0.25,
-    perimeter_subdivisions: int = 6,
+    blob_points: int = 22,
+    blob_irregularity: float = 0.28,
+    ray_count_range: Tuple[int, int] = (5, 10),
+    ray_length_range: Tuple[float, float] = (1.25, 2.0),
+    ray_long_prob: float = 0.25,
+    ray_long_range: Tuple[float, float] = (2.4, 3.6),
+    ray_width_range: Tuple[float, float] = (2.5, 6.0),
     droplet_count: int = 5,
     droplet_min_dist: float = 1.35,
-    droplet_max_dist: float = 2.0,
+    droplet_max_dist: float = 2.4,
     asymmetry: float = 0.0,
     seed: Optional[int] = None,
 ) -> str:
-    """Build the reference-image-style splash: a jagged star silhouette
-    whose *peaks are rounded off* rather than snapped to sharp points.
+    """Build a paint-splash silhouette by composing three parts —
+    matches how real ink splats read visually rather than trying to
+    fit a single polar function.
 
-    For each of ``num_spikes`` spikes we walk ``perimeter_subdivisions``
-    vertices from valley → peak → valley using a sine profile
-    ``r = base * (valley_factor + (peak_factor - valley_factor) * sin(πt))``.
-    Because the profile is a sine, both the valley cusps *and* the
-    spike tips are continuous curves — you keep the star silhouette
-    without the caltrop-sharp corners.
+    1. **Main blob** — an irregular amoeba shape with soft, wobbly
+       edges (no spikes on it at all). Multi-harmonic radial noise.
+    2. **Long thin rays** — separate triangular streaks at random
+       angles and lengths. Most are shortish, a few are extra-long.
+       Widths are small (a few degrees) so they read as streaks, not
+       triangles.
+    3. **Satellite droplets** — small facets scattered further out.
 
-    - ``spike_length`` controls how far peaks extend outside ``base_radius``.
-    - ``valley_depth`` controls how far valleys are pulled inside it.
-    - ``perimeter_subdivisions`` (>= 4) is the number of verts per
-      spike; higher = smoother curves at peaks and valleys.
+    All three parts are polyUnited into one mesh so the whole splash
+    is a single selectable object with the source shader carried
+    through.
 
-    ``asymmetry`` (0..1) biases spikes on the +X side (the ball's
-    forward tangent) longer and spikes on the -X side shorter.
+    ``asymmetry`` (0..1) biases the blob's silhouette, the rays'
+    angles, and the droplet placement so more material sits in the
+    +X direction (the ball's forward tangent) than in -X.
     """
     rng = random.Random(seed)
 
@@ -89,52 +149,65 @@ def _create_splash_facet(
         forward = (math.cos(angle) + 1.0) * 0.5     # 0..1
         return 1.0 - asymmetry * (1.0 - forward) * 0.7
 
-    # Per-spike jitter tables so heights and angular positions vary.
-    spike_height_jitter = [rng.uniform(0.7, 1.3) for _ in range(num_spikes)]
-    spike_phase_jitter = [rng.uniform(-0.15, 0.15) for _ in range(num_spikes)]
+    # ----- Main irregular blob body -----
+    main = _create_blob_facet(
+        name=f"{name}_body",
+        base_radius=base_radius,
+        num_points=blob_points,
+        irregularity=blob_irregularity,
+        rng=rng,
+        forward_mult=_forward_mult,
+    )
 
-    verts = []
-    total_verts = num_spikes * max(4, perimeter_subdivisions)
-    for i in range(total_verts):
-        # Which spike zone are we walking through?
-        spike_index_f = i / perimeter_subdivisions
-        spike_index = int(spike_index_f) % num_spikes
-        frac = spike_index_f - int(spike_index_f)   # 0..1 within spike
-        angle = ((spike_index + frac + spike_phase_jitter[spike_index])
-                 / num_spikes) * math.tau
-        # Sine profile: sin(π·frac) is 0 at spike edges (valley cusps),
-        # 1 at spike centre (peak tip). Both the transition INTO the
-        # peak and the transition OUT of the valley are smooth arcs.
-        wave = math.sin(frac * math.pi)
-        peak_factor = 1.0 + spike_length * spike_height_jitter[spike_index]
-        r = base_radius * (
-            (1.0 - valley_depth) + (peak_factor - (1.0 - valley_depth)) * wave
+    # ----- Long thin rays -----
+    rays: list = []
+    num_rays = rng.randint(*ray_count_range)
+    for i in range(num_rays):
+        # Random angle. Under asymmetry, occasionally re-roll backward
+        # angles so more rays end up on the forward side without
+        # eliminating the back-side ones entirely.
+        angle = rng.uniform(0.0, math.tau)
+        if asymmetry > 0.0 and math.cos(angle) < 0.0 \
+                and rng.random() < asymmetry * 0.7:
+            # Reflect to the forward hemisphere.
+            angle = math.pi - angle
+        # Length: usually mid, occasionally very long (long_prob).
+        if rng.random() < ray_long_prob:
+            length_mult = rng.uniform(*ray_long_range)
+        else:
+            length_mult = rng.uniform(*ray_length_range)
+        length_mult *= _forward_mult(angle)
+        outer = base_radius * length_mult
+        # Small tip curvature so rays aren't laser-perfect radials.
+        tip_curl = rng.uniform(-4.0, 4.0)
+        ray = _create_ray_facet(
+            name=f"{name}_ray{i}",
+            angle=angle,
+            inner_radius=base_radius * 0.85,
+            outer_radius=outer,
+            width_degrees=rng.uniform(*ray_width_range),
+            tip_offset_degrees=tip_curl,
         )
-        r *= 1.0 + rng.uniform(-0.03, 0.03)
-        r *= _forward_mult(angle)
-        verts.append((r * math.cos(angle), 0.0, r * math.sin(angle)))
+        rays.append(ray)
 
-    main = cmds.polyCreateFacet(p=verts, ch=False, n=f"{name}_main")[0]
-
-    droplets = []
+    # ----- Satellite droplets -----
+    droplets: list = []
     for i in range(droplet_count):
         if asymmetry > 0.0:
-            # Bias droplet placement forward so no drops fly behind the
-            # impact when the hit is grazing.
-            angle = rng.uniform(-math.pi * (1.0 - asymmetry * 0.8),
-                                 math.pi * (1.0 - asymmetry * 0.8))
+            drop_angle = rng.uniform(-math.pi * (1.0 - asymmetry * 0.8),
+                                      math.pi * (1.0 - asymmetry * 0.8))
         else:
-            angle = rng.uniform(0.0, math.tau)
+            drop_angle = rng.uniform(0.0, math.tau)
         dist = base_radius * rng.uniform(droplet_min_dist, droplet_max_dist)
-        dist *= _forward_mult(angle)
+        dist *= _forward_mult(drop_angle)
         r = base_radius * rng.uniform(0.06, 0.16)
         d = _create_droplet_facet(f"{name}_drop{i}", r, rng)
-        cmds.setAttr(f"{d}.translateX", dist * math.cos(angle))
-        cmds.setAttr(f"{d}.translateZ", dist * math.sin(angle))
+        cmds.setAttr(f"{d}.translateX", dist * math.cos(drop_angle))
+        cmds.setAttr(f"{d}.translateZ", dist * math.sin(drop_angle))
         droplets.append(d)
 
-    if droplets:
-        pieces = [main] + droplets
+    pieces = [main] + rays + droplets
+    if len(pieces) > 1:
         combined = cmds.polyUnite(pieces, ch=False)[0]
         cmds.delete(combined, ch=True)
         combined = cmds.rename(combined, name)
