@@ -11,9 +11,13 @@ Two ways to run this file from inside Maya:
 
 Both do the same thing:
 
-* Copy (or download from GitHub) the ``paint_projectile/`` package and
-  ``paint_projectile_launch.py`` into your Maya user scripts folder
-  (``cmds.internalVar(userScriptDir=True)``).
+* **Download** the ``paint_projectile/`` package and
+  ``paint_projectile_launch.py`` fresh from GitHub every time and drop
+  them into your Maya user scripts folder
+  (``cmds.internalVar(userScriptDir=True)``). This means you never have
+  to ``git pull`` — just drag install.py.
+  (Developers can opt in to the local checkout by setting
+  ``PAINT_PROJECTILE_USE_LOCAL=1`` before dragging install.py.)
 * Verify the installed version by reading ``__version__`` back off disk.
 * Force-flush any previously loaded ``paint_projectile*`` modules from
   ``sys.modules`` so the very next import picks up the fresh code —
@@ -193,14 +197,36 @@ def _download_from_github(dest_root: str) -> None:
 
 
 def _copy_package(dest_root: str) -> None:
+    """Fetch the package files.
+
+    Default behavior: always download the latest from GitHub so the user
+    never has to remember to ``git pull`` before dragging install.py in.
+    That makes install.py itself the only file the user has to keep
+    around — every install grabs fresh source code straight from the
+    canonical branch on GitHub.
+
+    Developers who want to iterate on the local checkout can opt in by
+    setting the environment variable ``PAINT_PROJECTILE_USE_LOCAL=1``
+    before dragging install.py — in that mode the ``paint_projectile/``
+    folder next to install.py is copied verbatim and no network round
+    trip happens.
+    """
+    use_local = os.environ.get("PAINT_PROJECTILE_USE_LOCAL") == "1"
     src_pkg = os.path.join(_REPO_ROOT, _PACKAGE)
     src_launcher = os.path.join(_REPO_ROOT, _LAUNCHER)
-    if os.path.isdir(src_pkg) and os.path.isfile(src_launcher):
-        print(f"[paint_projectile] copying local files from {_REPO_ROOT}")
+    have_local = os.path.isdir(src_pkg) and os.path.isfile(src_launcher)
+
+    if use_local and have_local:
+        print(f"[paint_projectile] PAINT_PROJECTILE_USE_LOCAL=1 → copying "
+              f"local files from {_REPO_ROOT}")
         _copy_from_local(dest_root)
     else:
-        print("[paint_projectile] no local package next to install.py — "
-              "downloading from GitHub")
+        if have_local:
+            print("[paint_projectile] local files exist next to install.py "
+                  "but downloading from GitHub anyway (set "
+                  "PAINT_PROJECTILE_USE_LOCAL=1 to prefer local)")
+        else:
+            print("[paint_projectile] downloading latest from GitHub")
         _download_from_github(dest_root)
 
 

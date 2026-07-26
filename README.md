@@ -35,12 +35,16 @@ Smear / Collision / Splat / Droplet は今後の段階で追加予定。
 `install.py` を Maya のビューポートに **ドラッグ&ドロップ** するだけで、
 
 1. `paint_projectile/` パッケージと `paint_projectile_launch.py` を
-   Maya のユーザースクリプトフォルダにコピー
+   **GitHub から毎回ダウンロード** して Maya のユーザースクリプトフォルダに配置
    (例: `Documents/maya/2023/scripts/`)
 2. `sys.path` に自動追加
 3. 現在アクティブなシェルフに **PaintFX ボタン** を追加
 
-が完了します。以降はシェルフボタンを押すだけで UI が起動します。
+`install.py` 1 ファイルさえ手元にあれば OK。`git pull` は不要です。
+以降はシェルフボタンを押すだけで UI が起動します。
+
+> ローカルクローンを開発中で local files を反映したい場合は、install.py を
+> ドラッグする前に環境変数 `PAINT_PROJECTILE_USE_LOCAL=1` をセットしてください。
 
 Script Editor から実行する場合は Python タブで:
 
