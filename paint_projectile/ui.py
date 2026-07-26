@@ -613,20 +613,29 @@ def _build_embedded_viewport() -> str:
     """Create a modelPanel embedded in the tool window that shows the
     live preview via a dedicated camera. Wrapped in a frame so a
     Maya build that refuses to embed a modelPanel gracefully falls
-    back to a text placeholder."""
+    back to a text placeholder.
+
+    IMPORTANT: this function must always leave the cmds setParent
+    context back at the OUTER form. If it entered a paneLayout it
+    must exit it, even on error, or the next _build_* call ends up
+    as a child of *this* frame instead of a sibling.
+    """
     frame = cmds.frameLayout(l="🎥 3D プレビュー",
                              cll=False, mh=2, mw=2,
                              bgc=(0.16, 0.16, 0.18))
+    embedded_ok = False
+    entered_pane = False
     try:
         cam = _ensure_preview_camera()
-        pane = cmds.paneLayout(configuration="single")
+        cmds.paneLayout(configuration="single")
+        entered_pane = True
         # Kill any prior instance of the panel — names are global.
         if cmds.modelPanel(_EMBEDDED_PANEL, exists=True):
             try:
                 cmds.deleteUI(_EMBEDDED_PANEL, panel=True)
             except Exception:
                 pass
-        cmds.modelPanel(_EMBEDDED_PANEL, cam=cam, mbv=False, parent=pane)
+        cmds.modelPanel(_EMBEDDED_PANEL, cam=cam, mbv=False)
         try:
             editor = cmds.modelPanel(_EMBEDDED_PANEL, q=True, modelEditor=True)
             cmds.modelEditor(editor, e=True,
@@ -639,15 +648,22 @@ def _build_embedded_viewport() -> str:
                              selectionHiliteDisplay=False)
         except Exception:
             pass
-        cmds.setParent("..")   # exit pane
+        embedded_ok = True
     except Exception as exc:
-        # Some Maya builds / batch modes reject embedded modelPanels —
-        # show a fallback so the tool still works.
         print(f"[paint_projectile] embedded viewport unavailable: {exc}")
+
+    # Always exit paneLayout if we opened one, so the fallback text
+    # (if any) and the final setParent("..") work at the correct
+    # nesting level.
+    if entered_pane:
+        cmds.setParent("..")
+
+    if not embedded_ok:
         cmds.text(l="(3D プレビューはこの Maya では埋め込めません。"
                     "Maya の通常ビューポートで表示されます。)",
                   h=60, al="center")
-    cmds.setParent("..")   # exit frame
+
+    cmds.setParent("..")   # exit frame → back to root form
     return frame
 
 
