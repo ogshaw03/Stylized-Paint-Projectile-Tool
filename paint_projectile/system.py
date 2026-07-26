@@ -239,11 +239,10 @@ def create_projectile_system(
     group = cmds.group(em=True, n=f"{name}_GRP")
 
     # Controller: a small nurbs circle so it's selectable in the viewport.
-    ctrl_transform, _ = cmds.circle(
-        n=f"{name}_CTRL", nr=(0, 1, 0), r=1.0, ch=False
-    )
-    cmds.parent(ctrl_transform, group)
-    ctrl = ctrl_transform
+    # With ch=False the return list has just the transform (no history node),
+    # so index rather than 2-tuple-unpack.
+    ctrl = cmds.circle(n=f"{name}_CTRL", nr=(0, 1, 0), r=1.0, ch=False)[0]
+    cmds.parent(ctrl, group)
     _build_controller_attributes(ctrl)
 
     # Projectile transform + duplicated mesh. We reparent, then explicitly
