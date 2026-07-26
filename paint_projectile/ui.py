@@ -129,6 +129,9 @@ def _on_generate(fields):
     splat_scale = cmds.floatSliderGrp(fields["splatScale"], q=True, v=True)
     splat_offset = cmds.floatSliderGrp(fields["splatOffset"], q=True, v=True)
     splat_grow = int(cmds.intFieldGrp(fields["splatGrow"], q=True, v1=True))
+    splat_stretch = cmds.floatSliderGrp(fields["splatStretch"], q=True, v=True)
+    splat_squeeze = cmds.floatSliderGrp(fields["splatSqueeze"], q=True, v=True)
+    splat_jitter = cmds.floatSliderGrp(fields["splatJitter"], q=True, v=True)
     squash_frames = int(cmds.intFieldGrp(fields["squashFrames"], q=True, v1=True))
 
     result = _system.create_projectile_system(
@@ -146,6 +149,9 @@ def _on_generate(fields):
         splat_scale=splat_scale,
         splat_surface_offset=splat_offset,
         splat_grow_frames=splat_grow,
+        splat_max_stretch=splat_stretch,
+        splat_min_squeeze=splat_squeeze,
+        splat_rotation_jitter=splat_jitter,
         impact_squash_frames=squash_frames,
     )
     cmds.select(result.controller, r=True)
@@ -354,8 +360,10 @@ def show() -> str:
     cmds.button(l="Clear Templates", h=22,
                 c=lambda *_: _clear_field(fields["splatTemplates"]))
     fields["splatScale"] = cmds.floatSliderGrp(
-        l="Scale", f=True, min=0.0, max=10.0, fmn=0.0, fmx=1000.0,
-        v=1.0, pre=2)
+        l="Size (× ball)", f=True, min=0.5, max=10.0, fmn=0.0, fmx=1000.0,
+        v=3.0, pre=2,
+        annotation=("Splat radius as a multiplier of the projectile's "
+                    "bounding radius. 3.0 = splat is ~3× the ball."))
     fields["splatOffset"] = cmds.floatSliderGrp(
         l="Surface Offset", f=True, min=0.0, max=1.0, fmn=0.0, fmx=100.0,
         v=0.01, pre=3,
@@ -364,6 +372,22 @@ def show() -> str:
     fields["splatGrow"] = cmds.intFieldGrp(
         l="Grow Frames", nf=1, v1=2,
         annotation="Frames over which the splat scales 0 -> full.")
+    fields["splatStretch"] = cmds.floatSliderGrp(
+        l="Grazing Stretch", f=True, min=1.0, max=3.0, fmn=1.0, fmx=10.0,
+        v=1.8, pre=2,
+        annotation=("How much the splat stretches along the direction "
+                    "of travel on a fully-grazing hit. 1.0 = no "
+                    "directional deformation."))
+    fields["splatSqueeze"] = cmds.floatSliderGrp(
+        l="Grazing Squeeze", f=True, min=0.1, max=1.0, fmn=0.0, fmx=1.0,
+        v=0.55, pre=2,
+        annotation=("How much the splat squeezes perpendicular to the "
+                    "direction of travel on a fully-grazing hit."))
+    fields["splatJitter"] = cmds.floatSliderGrp(
+        l="Rot Jitter", f=True, min=0.0, max=90.0, fmn=0.0, fmx=180.0,
+        v=12.0, pre=1,
+        annotation=("Random rotation (deg) around the surface normal, "
+                    "so repeat splats don't read as identical shapes."))
     cmds.setParent("..")
     cmds.setParent("..")
 

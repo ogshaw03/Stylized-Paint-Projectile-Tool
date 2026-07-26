@@ -185,9 +185,12 @@ def create_projectile_system(
     collision_meshes: Optional[Iterable[str]] = None,
     splat_template: Optional[str] = None,
     splat_templates: Optional[Iterable[str]] = None,
-    splat_scale: float = 1.0,
+    splat_scale: float = 3.0,
     splat_surface_offset: float = 0.01,
     splat_grow_frames: int = 2,
+    splat_max_stretch: float = 1.8,
+    splat_min_squeeze: float = 0.55,
+    splat_rotation_jitter: float = 12.0,
     impact_squash_frames: int = 1,
 ) -> ProjectileSystem:
     """Generate a projectile system.
@@ -223,12 +226,22 @@ def create_projectile_system(
         candidates (``splat_templates``) — one is picked at random.
         If neither is provided a default flat disc is generated.
     splat_scale : float
-        Final scale of the spawned splat mesh.
+        Splat size *as a multiplier of the projectile's bounding
+        radius*. Default 3.0 = splat radius is roughly 3× the ball
+        radius; a small ball leaves a small splash, a big ball leaves
+        a big one.
     splat_surface_offset : float
         Distance to offset the splat along the surface normal to avoid
         Z-fighting with the collider.
     splat_grow_frames : int
         Number of frames over which the splat scales from 0 to full.
+    splat_max_stretch, splat_min_squeeze : float
+        How much the splat deforms on a grazing hit. Perpendicular hit
+        → 1.0/1.0. Fully grazing hit → stretch = max_stretch along the
+        direction of travel, squeeze = min_squeeze perpendicular.
+    splat_rotation_jitter : float
+        Random Y-axis rotation (degrees) applied on top of the
+        tangent alignment so multiple splats don't read as identical.
     impact_squash_frames : int
         Number of frames after impact before the projectile hides.
     """
@@ -426,6 +439,20 @@ def create_projectile_system(
                 candidates = [m for m in splat_templates if m]
             elif splat_template:
                 candidates = [splat_template]
+
+            # Splat sizing follows the projectile's own radius, so a
+            # small ball → small splash, big ball → big splash.
+            projectile_radius = _splat.projectile_bounding_radius(mesh)
+            splat_base_scale = projectile_radius * float(splat_scale)
+
+            # Velocity-driven directional stretch.
+            stretch_along, stretch_perp, tan_dir = _splat.compute_splat_stretch(
+                velocity=impact_info.velocity,
+                normal=impact_info.normal,
+                max_stretch=splat_max_stretch,
+                min_squeeze=splat_min_squeeze,
+            )
+
             splat_name = _splat.create_splats_from_candidates(
                 base_name=f"{name}_splat",
                 position=impact_info.position,
@@ -435,7 +462,12 @@ def create_projectile_system(
                 surface_offset=splat_surface_offset,
                 spawn_frame=impact_info.frame + impact_squash_frames,
                 grow_frames=splat_grow_frames,
-                scale=splat_scale,
+                base_scale=splat_base_scale,
+                stretch_along_tangent=stretch_along,
+                stretch_perp_tangent=stretch_perp,
+                tangent_direction=tan_dir,
+                rotation_jitter_degrees=splat_rotation_jitter,
+                seed=impact_info.frame,
             )
 
     # Snap current time so the animator sees the first sample immediately.
