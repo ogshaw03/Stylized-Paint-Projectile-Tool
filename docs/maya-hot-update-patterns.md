@@ -166,7 +166,7 @@ Python は 1 度 import したモジュールを `sys.modules` にキャッシ�
 入れ替え前に強制フラッシュ:
 
 ```python
-def _flush_imports(pkg="paint_projectile"):
+def _flush_imports(pkg="my_tool"):
     for name in list(sys.modules):
         if name == pkg or name.startswith(pkg + "."):
             sys.modules.pop(name, None)
@@ -424,58 +424,551 @@ print(f"sha256   : {sha}")
 
 ---
 
-## 5. 参考実装
+## 5. 完全テンプレ コード (この doc に埋め込み)
 
-> **⚠ この doc を新規ツール開発セッションで読み込ませる場合**
->
-> 以下 §5 〜 §7 で「このリポジトリ」「`docs/reference-code/…`」と書かれている
-> のは、**この doc が置いてある参照元リポジトリ = `ogshaw03/Stylized-Paint-Projectile-Tool`**
-> を指す。あなたが今書いている新ツール リポジトリのことではない。
->
-> 新セッションでは、以下の URL 群を **WebFetch で取得してから** コピペ / 書き換え
-> ベースの実装を進めること。相対パスとして自分の作業ツリーを検索しない。
->
-> - パターン doc (この doc):
->   `https://raw.githubusercontent.com/ogshaw03/Stylized-Paint-Projectile-Tool/main/docs/maya-hot-update-patterns.md`
-> - installer テンプレ:
->   `https://raw.githubusercontent.com/ogshaw03/Stylized-Paint-Projectile-Tool/main/docs/reference-code/install.py`
-> - ツール本体テンプレ:
->   `https://raw.githubusercontent.com/ogshaw03/Stylized-Paint-Projectile-Tool/main/docs/reference-code/my_tool.py`
-> - テンプレ README:
->   `https://raw.githubusercontent.com/ogshaw03/Stylized-Paint-Projectile-Tool/main/docs/reference-code/README.md`
+このセクションから先は **この doc 単体で** 新ツールを立ち上げられるように、
+2 つの Python テンプレの全文をコードブロックで直接掲載する。
+追加の URL や外部ファイル取得は不要 — **§5-A / §5-B のコードを丸ごとコピー**
+→ §6 の CUSTOMIZE 定数を書き換え → GitHub に push、で完了。
 
-参照元リポジトリ側で上記パターンを全部実装している一次実装:
+### 配布時のファイル構成
 
-- `install.py` — SHA-pinned fetch, atomic write, force overwrite, shelf popup
-- `paint_projectile/ui.py` — Update ボタン (`_update_from_github` + `_run_update` + `_reopen_after_update`)
-- `paint_projectile/__init__.py` — `__version__`
-
-さらに **新規ツール向けにインフラだけ抜き出したテンプレート** が、
-参照元リポジトリの `docs/reference-code/` に置いてある (上記 URL 参照):
+新ツール リポジトリのルートに以下 2 ファイルだけ置く:
 
 ```
-<paint_projectile repo>/docs/reference-code/
-├── README.md      ← セットアップ手順 / 検証チェックリスト
-├── install.py     ← ドラッグ&ドロップ installer 単体テンプレ
-└── my_tool.py     ← ツール本体テンプレ (__version__ + show() + Update)
+your-new-tool/
+├── install.py       ← §5-A の内容をコピー
+└── my_tool.py       ← §5-B の内容をコピー ・ ファイル名は §6-3 の規則で命名
 ```
 
-新セッションでは 2 ファイル (`install.py` + `my_tool.py`) を **WebFetch で
-取得** → 新ツール リポジトリのルートに置く → 定数書き換え → GitHub push、
-で同じ配布・更新体験のツールが立ち上がる。
+エンドユーザーへの配布物 = `install.py` の GitHub raw URL のみ。
+ブラウザで保存 → Maya ビューポートにドラッグで完結。
+
+以降、ユーザーは UI 内の「GitHub から更新」ボタン (もしくはシェルフボタン
+右クリック → Update from GitHub) で最新版を取り込める。
 
 ---
 
-## 6. テンプレの CUSTOMIZE ブロック — 書き換え必須の定数
+### §5-A. `install.py` の全文
 
-**参照元リポジトリ側の** テンプレ (§5 の URL 群、参照元 =
-`ogshaw03/Stylized-Paint-Projectile-Tool` の `docs/reference-code/install.py` と
-`my_tool.py`) は冒頭に `# ─── CUSTOMIZE ───` で挟まれた定数ブロックを持って
-いる。**書き換えが必要なのはこのブロックだけ**、他はそのままで動く。
+```python
+"""Generic Maya-tool installer template (single-file tool).
 
-新ツール セッションでは、これら 2 ファイルを WebFetch で取得 → 中身を
-新ツール リポジトリのルートに書き出し → 以下の CUSTOMIZE を新ツール向けに
-書き換えて GitHub に push、が定型フロー。
+Ships alongside a single module file (``my_tool.py``). Two ways to
+run this from inside Maya:
+
+1) Drag ``install.py`` from your file browser into any Maya viewport.
+2) From the Script Editor (Python tab)::
+
+       exec(open(r"C:/path/to/install.py").read())
+
+Either way:
+
+* Fetches ``my_tool.py`` fresh from GitHub (SHA-pinned URL, so no CDN
+  cache staleness) and writes it to your Maya user scripts folder.
+* Force-overwrites the existing file (Windows read-only cleared,
+  atomic tmp+os.replace).
+* Wipes any ``__pycache__/my_tool.cpython-*.pyc`` so stale bytecode
+  doesn't shadow the freshly copied source.
+* Flushes ``my_tool`` from ``sys.modules`` so the next import reads
+  from disk — no Maya restart needed.
+* Adds / refreshes a shelf button on the active shelf. Left-click
+  launches; right-click has an "Update from GitHub" menu that
+  re-runs this installer without another drag.
+
+============================================================================
+CUSTOMIZE FOR YOUR TOOL — change these 4 constants:
+============================================================================
+"""
+
+from __future__ import annotations
+
+import os
+import re
+import shutil
+import sys
+
+
+# ─── CUSTOMIZE ────────────────────────────────────────────────────────────
+_GITHUB_OWNER = "YOUR_GITHUB_USERNAME"
+_GITHUB_REPO = "YOUR_REPO_NAME"
+_GITHUB_BRANCH = "main"
+
+_MODULE = "my_tool"                     # your tool's .py filename (without .py)
+_SHELF_BUTTON_LABEL = "MyTool"          # short label on the shelf button
+# ─── END CUSTOMIZE ────────────────────────────────────────────────────────
+
+
+_MODULE_FILE = f"{_MODULE}.py"
+_REPO_ROOT = os.path.dirname(os.path.abspath(__file__))
+_GITHUB_API = f"https://api.github.com/repos/{_GITHUB_OWNER}/{_GITHUB_REPO}"
+_GITHUB_RAW_BASE = f"https://raw.githubusercontent.com/{_GITHUB_OWNER}/{_GITHUB_REPO}"
+
+
+# --------------------------------------------------------------------------- #
+# Force-overwrite helpers (Windows-safe)  — patterns doc §1-3, §1-4
+# --------------------------------------------------------------------------- #
+
+def _force_writable(path: str) -> None:
+    import stat
+    try:
+        os.chmod(path, stat.S_IWRITE | stat.S_IREAD)
+    except Exception:
+        pass
+
+
+def _atomic_write_bytes(target: str, data: bytes) -> None:
+    """Overwrite ``target`` atomically. Either the previous complete
+    file OR the new complete file exists on disk — no half-written
+    garbage on cancel / power loss / disk full."""
+    os.makedirs(os.path.dirname(target) or ".", exist_ok=True)
+    if os.path.exists(target):
+        _force_writable(target)
+    tmp = target + ".tmp_install"
+    with open(tmp, "wb") as fh:
+        fh.write(data)
+        fh.flush()
+        try:
+            os.fsync(fh.fileno())
+        except Exception:
+            pass
+    os.replace(tmp, target)
+
+
+# --------------------------------------------------------------------------- #
+# Module acquisition
+# --------------------------------------------------------------------------- #
+
+def _resolve_latest_sha() -> str:
+    """SHA-pinned raw URLs are the only reliable cache-buster for
+    raw.githubusercontent.com — its CDN caches by path only."""
+    import json
+    import random
+    import time
+    from urllib.request import Request, urlopen
+
+    salt = f"{time.time():.6f}_{random.randint(0, 2 ** 32)}"
+    req = Request(f"{_GITHUB_API}/branches/{_GITHUB_BRANCH}?_={salt}",
+                  headers={
+                      "Accept": "application/vnd.github+json",
+                      "Cache-Control": "no-cache",
+                      "User-Agent": f"{_MODULE}-installer/{salt}",
+                  })
+    try:
+        with urlopen(req, timeout=30) as resp:
+            sha = json.loads(resp.read().decode("utf-8"))["commit"]["sha"]
+        print(f"[{_MODULE}] resolved {_GITHUB_BRANCH} → {sha[:10]}")
+        return sha
+    except Exception as exc:
+        print(f"[{_MODULE}] SHA lookup failed ({exc}); falling back to "
+              f"branch name (may hit CDN cache)")
+        return _GITHUB_BRANCH
+
+
+def _fetch_module(dest_root: str) -> None:
+    """Default: always pull from GitHub. Developers who want to
+    iterate on the local checkout set ``<MODULE>_USE_LOCAL=1``."""
+    from urllib.request import Request, urlopen
+
+    env_flag = f"{_MODULE.upper()}_USE_LOCAL"
+    use_local = os.environ.get(env_flag) == "1"
+    src_local = os.path.join(_REPO_ROOT, _MODULE_FILE)
+    target = os.path.join(dest_root, _MODULE_FILE)
+
+    if use_local and os.path.isfile(src_local):
+        print(f"[{_MODULE}] {env_flag}=1 → copying local {src_local}")
+        with open(src_local, "rb") as fh:
+            data = fh.read()
+    else:
+        sha = _resolve_latest_sha()
+        url = f"{_GITHUB_RAW_BASE}/{sha}/{_MODULE_FILE}"
+        print(f"[{_MODULE}] downloading {url}")
+        req = Request(url, headers={
+            "Cache-Control": "no-cache",
+            "User-Agent": f"{_MODULE}-installer/{sha[:10]}",
+        })
+        try:
+            data = urlopen(req, timeout=30).read()
+        except Exception as exc:
+            raise RuntimeError(f"Failed to download {url}: {exc}")
+
+    _atomic_write_bytes(target, data)
+    print(f"[{_MODULE}]   → {target} ({len(data)} bytes)")
+
+
+# --------------------------------------------------------------------------- #
+# Post-install: verify, clean pycache, flush imports, shelf button
+# --------------------------------------------------------------------------- #
+
+def _verify_install(dest_root: str) -> None:
+    p = os.path.join(dest_root, _MODULE_FILE)
+    if not os.path.isfile(p) or os.path.getsize(p) == 0:
+        raise RuntimeError(f"Install verification failed — {p} missing/empty")
+
+
+def _clean_pycache(dest_root: str) -> None:
+    """Remove any stale .pyc for this module — patterns doc §1-5."""
+    pycache = os.path.join(dest_root, "__pycache__")
+    if not os.path.isdir(pycache):
+        return
+    for name in os.listdir(pycache):
+        if name.startswith(f"{_MODULE}.") and name.endswith(".pyc"):
+            try:
+                _force_writable(os.path.join(pycache, name))
+                os.remove(os.path.join(pycache, name))
+            except Exception:
+                pass
+
+
+def _flush_imports() -> None:
+    """Drop the module from sys.modules — patterns doc §1-6."""
+    sys.modules.pop(_MODULE, None)
+
+
+def _read_installed_version(dest_root: str) -> str:
+    p = os.path.join(dest_root, _MODULE_FILE)
+    try:
+        with open(p, "r", encoding="utf-8") as fh:
+            for line in fh:
+                m = re.match(r'\s*__version__\s*=\s*[\'"]([^\'"]+)[\'"]', line)
+                if m:
+                    return m.group(1)
+    except Exception:
+        pass
+    return "(unknown)"
+
+
+def _close_existing_window() -> None:
+    try:
+        from maya import cmds
+        window_name = f"{_MODULE}Win"
+        if cmds.window(window_name, exists=True):
+            cmds.deleteUI(window_name)
+    except Exception:
+        pass
+
+
+# --------------------------------------------------------------------------- #
+# Shelf button (with right-click Update popup — patterns doc §1-8)
+# --------------------------------------------------------------------------- #
+
+_SHELF_LAUNCH_CMD = (
+    f"# Auto-generated by {_MODULE} install.py\n"
+    "import sys\n"
+    f"sys.modules.pop({_MODULE!r}, None)\n"
+    f"import {_MODULE} as _t; _t.show()\n"
+)
+
+_SHELF_UPDATE_CMD = (
+    f"# Auto-generated by {_MODULE} install.py\n"
+    "import json, urllib.request\n"
+    f"_api = 'https://api.github.com/repos/{_GITHUB_OWNER}/{_GITHUB_REPO}"
+    f"/branches/{_GITHUB_BRANCH}'\n"
+    "_sha = json.loads(urllib.request.urlopen(_api, timeout=30)"
+    ".read())['commit']['sha']\n"
+    f"_u = 'https://raw.githubusercontent.com/{_GITHUB_OWNER}/{_GITHUB_REPO}"
+    "/' + _sha + '/install.py'\n"
+    f"print('[{_MODULE}] update via SHA', _sha[:10])\n"
+    "exec(compile(urllib.request.urlopen(_u, timeout=30).read(),\n"
+    "             'install.py (from GitHub)', 'exec'),\n"
+    "     {'__name__': 'install', '__file__': '<github>'})\n"
+)
+
+
+def _add_shelf_button() -> None:
+    from maya import cmds, mel
+
+    top_shelf = mel.eval("$tmp = $gShelfTopLevel")
+    if not top_shelf or not cmds.tabLayout(top_shelf, exists=True):
+        return
+    current = cmds.tabLayout(top_shelf, q=True, selectTab=True)
+    if not current:
+        return
+
+    for child in cmds.shelfLayout(current, q=True, ca=True) or []:
+        try:
+            if cmds.shelfButton(child, q=True, label=True) == _SHELF_BUTTON_LABEL:
+                cmds.deleteUI(child)
+        except Exception:
+            pass
+
+    button = cmds.shelfButton(
+        parent=current,
+        label=_SHELF_BUTTON_LABEL,
+        annotation="Left-click: launch.  Right-click: update from GitHub.",
+        image="pythonFamily.png",
+        imageOverlayLabel=_SHELF_BUTTON_LABEL[:5],
+        command=_SHELF_LAUNCH_CMD,
+        sourceType="python",
+    )
+    popup = cmds.popupMenu(parent=button, button=3)
+    cmds.menuItem(parent=popup, label="Launch Tool",
+                  command=_SHELF_LAUNCH_CMD, sourceType="python")
+    cmds.menuItem(parent=popup, divider=True)
+    cmds.menuItem(parent=popup, label="Update from GitHub",
+                  command=_SHELF_UPDATE_CMD, sourceType="python")
+
+
+# --------------------------------------------------------------------------- #
+# Entry points
+# --------------------------------------------------------------------------- #
+
+def install() -> str:
+    from maya import cmds
+
+    user_scripts = cmds.internalVar(userScriptDir=True).rstrip("/\\")
+    if not os.path.isdir(user_scripts):
+        os.makedirs(user_scripts)
+
+    prev_version = _read_installed_version(user_scripts)
+
+    _close_existing_window()
+    _fetch_module(user_scripts)
+    _clean_pycache(user_scripts)
+    _verify_install(user_scripts)
+    _flush_imports()
+
+    if user_scripts not in sys.path:
+        sys.path.insert(0, user_scripts)
+
+    _add_shelf_button()
+    new_version = _read_installed_version(user_scripts)
+
+    print(f"[{_MODULE}] " + "=" * 55)
+    print(f"[{_MODULE}] installed to:      {user_scripts}")
+    print(f"[{_MODULE}] previous version:  {prev_version}")
+    print(f"[{_MODULE}] current  version:  {new_version}")
+    print(f"[{_MODULE}] " + "=" * 55)
+
+    try:
+        cmds.confirmDialog(
+            title=_SHELF_BUTTON_LABEL,
+            message=(f"Installed to:\n{user_scripts}\n\n"
+                     f"Version: {prev_version} → {new_version}\n\n"
+                     f"The '{_SHELF_BUTTON_LABEL}' shelf button has "
+                     "been refreshed. Left-click to launch, right-click "
+                     "for Update-from-GitHub."),
+            button=["OK"])
+    except Exception:
+        pass
+    return user_scripts
+
+
+def onMayaDroppedPythonFile(*_args) -> None:
+    install()
+
+
+# ``exec(open(...).read())`` from Script Editor bypasses
+# ``__name__ == '__main__'`` and onMayaDroppedPythonFile — auto-run
+# install here so both entry points work. install() is idempotent
+# (existing file wiped before write), so drag-drop's double-run is
+# harmless.
+try:
+    from maya import cmds as _cmds  # noqa: F401
+    install()
+except ImportError:
+    pass
+```
+
+---
+
+### §5-B. `my_tool.py` の全文
+
+`_build_body()` の中を自分のツールの UI に書き換えて使う。それ以外は触らない。
+
+```python
+"""my_tool — single-file Maya tool template with Update-from-GitHub.
+
+Everything the tool needs lives here:
+    * __version__ for install.py's before/after dialog and the UI footer
+    * show() to open the tool window
+    * The Update-from-GitHub button flow (evalDeferred 3-stage, safe
+      window teardown, SHA-pinned re-fetch of install.py)
+
+Ship this file + install.py — that's it. Add your real controls and
+tool logic in place of the placeholder ``_build_body``.
+
+Shelf button command (auto-generated by install.py) is just:
+
+    import my_tool; my_tool.show()
+
+Rename the module to whatever your tool is (``rig_utils``,
+``asset_browser``, etc.) — remember to update install.py's ``_MODULE``
+to match.
+"""
+
+from __future__ import annotations
+
+try:
+    from maya import cmds  # type: ignore
+except ImportError:  # pragma: no cover
+    cmds = None  # type: ignore
+
+
+__version__ = "0.1.0"
+
+
+WINDOW = "myToolWin"  # match install.py's _close_existing_window() target
+
+# ─── CUSTOMIZE ────────────────────────────────────────────────────────────
+_GITHUB_OWNER = "YOUR_GITHUB_USERNAME"
+_GITHUB_REPO = "YOUR_REPO_NAME"
+_GITHUB_BRANCH = "main"
+_PACKAGE = "my_tool"          # matches this file's module name
+# ─── END CUSTOMIZE ────────────────────────────────────────────────────────
+
+_GITHUB_API = f"https://api.github.com/repos/{_GITHUB_OWNER}/{_GITHUB_REPO}"
+_GITHUB_RAW_BASE = f"https://raw.githubusercontent.com/{_GITHUB_OWNER}/{_GITHUB_REPO}"
+
+
+# --------------------------------------------------------------------------- #
+# Update-from-GitHub flow  (patterns doc §1-7, §1-8, §1-9)
+# --------------------------------------------------------------------------- #
+
+def _resolve_latest_sha() -> str:
+    """SHA-pinned URLs are the only reliable cache-buster for
+    raw.githubusercontent.com. Ask the API for main's tip commit."""
+    import json
+    import random
+    import time
+    import urllib.request
+
+    salt = f"{time.time():.6f}_{random.randint(0, 2 ** 32)}"
+    req = urllib.request.Request(
+        f"{_GITHUB_API}/branches/{_GITHUB_BRANCH}?_={salt}",
+        headers={
+            "Accept": "application/vnd.github+json",
+            "Cache-Control": "no-cache",
+            "User-Agent": f"{_PACKAGE}-updater/{salt}",
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            return json.loads(resp.read().decode("utf-8"))["commit"]["sha"]
+    except Exception as exc:
+        print(f"[{_PACKAGE}] SHA lookup failed ({exc}); falling back to "
+              f"{_GITHUB_BRANCH}")
+        return _GITHUB_BRANCH
+
+
+def update_from_github(*_args) -> None:
+    """UI button callback. Immediately returns — the actual work runs
+    on the next Maya idle so we don't tear down the window that owns
+    this callback while the callback is still on the stack."""
+    cmds.evalDeferred(_run_update, lowestPriority=True)
+
+
+def _run_update() -> None:
+    import sys
+    import traceback
+    import urllib.request
+
+    sha = _resolve_latest_sha()
+    url = f"{_GITHUB_RAW_BASE}/{sha}/install.py"
+    print(f"[{_PACKAGE}] update: fetching {url}")
+    try:
+        req = urllib.request.Request(url, headers={
+            "Cache-Control": "no-cache",
+            "User-Agent": f"{_PACKAGE}-updater/{sha[:10]}",
+        })
+        source = urllib.request.urlopen(req, timeout=30).read()
+    except Exception as exc:
+        traceback.print_exc()
+        cmds.confirmDialog(title="Update failed",
+                           message=f"install.py fetch failed:\n{exc}",
+                           button=["OK"])
+        return
+
+    if cmds.window(WINDOW, exists=True):
+        try:
+            cmds.deleteUI(WINDOW)
+        except Exception:
+            pass
+
+    ns = {"__name__": "install", "__file__": "<github>"}
+    try:
+        exec(compile(source, "install.py (from GitHub)", "exec"), ns)
+    except Exception as exc:
+        traceback.print_exc()
+        cmds.confirmDialog(
+            title="Update failed",
+            message=(f"install.py raised:\n{type(exc).__name__}: {exc}\n\n"
+                     "See Script Editor for full traceback."),
+            button=["OK"])
+        return
+
+    # Flush self so the next `import my_tool` re-reads the fresh copy.
+    for m in [k for k in list(sys.modules) if k == _PACKAGE]:
+        sys.modules.pop(m, None)
+
+    # Defer reopen so install()'s modal is fully dismissed first.
+    cmds.evalDeferred(_reopen_after_update, lowestPriority=True)
+
+
+def _reopen_after_update() -> None:
+    import importlib
+    import sys
+    import traceback
+    try:
+        if _PACKAGE in sys.modules:
+            importlib.reload(sys.modules[_PACKAGE])
+        mod = importlib.import_module(_PACKAGE)
+        mod.show()
+    except Exception as exc:
+        traceback.print_exc()
+        cmds.confirmDialog(
+            title="Reopen failed",
+            message=(f"Update finished but reopening the tool window "
+                     f"failed:\n{type(exc).__name__}: {exc}\n\n"
+                     "Click the shelf button to reopen manually."),
+            button=["OK"])
+
+
+# --------------------------------------------------------------------------- #
+# Window  — replace _build_body with your real controls
+# --------------------------------------------------------------------------- #
+
+def _build_body() -> None:
+    """Placeholder tool UI. Replace with your real controls."""
+    cmds.separator(h=4, style="none")
+    cmds.text(l="このウィンドウ本体は自由に組み替えて OK。",
+              al="left")
+    cmds.text(l="下の「GitHub から更新」だけそのまま置いておけば\n"
+                "アップデートフローは動きます。",
+              al="left")
+
+
+def show() -> str:
+    if cmds is None:
+        raise RuntimeError("show() must be called inside Maya.")
+
+    if cmds.window(WINDOW, exists=True):
+        cmds.deleteUI(WINDOW)
+
+    win = cmds.window(WINDOW,
+                      t=f"My Tool  —  v{__version__}",
+                      w=340, h=200, mnb=True, mxb=False, s=True)
+    cmds.columnLayout(adj=True, rs=8, cat=("both", 10))
+
+    _build_body()
+
+    cmds.separator(h=10, style="in")
+    cmds.rowLayout(nc=2, adj=1, cw2=(200, 130))
+    cmds.text(l=f"{_PACKAGE}  v{__version__}",
+              al="left", fn="smallObliqueLabelFont")
+    cmds.button(l="GitHub から更新", h=24, c=update_from_github)
+    cmds.setParent("..")
+
+    cmds.showWindow(win)
+    return win
+```
+
+---
+
+## 6. CUSTOMIZE ブロック — 書き換え必須の定数
+
+§5-A と §5-B の各コード冒頭に `# ─── CUSTOMIZE ───` で挟まれた定数ブロックが
+ある。**書き換えが必要なのはこのブロックだけ**、他はそのままで動く。
 
 ### 6-1. `install.py` (5 定数)
 
@@ -492,13 +985,13 @@ _SHELF_BUTTON_LABEL = "MyTool"          # short label on the shelf button
 
 | 定数 | 説明 | 例 |
 |---|---|---|
-| `_GITHUB_OWNER` | GitHub のアカウント名 / Organization 名 | `"ogshaw03"` |
-| `_GITHUB_REPO`  | リポジトリ名 (owner/repo の repo 部分) | `"paint-projectile-tool"` |
+| `_GITHUB_OWNER` | GitHub のアカウント名 / Organization 名 | `"acme_studio"` |
+| `_GITHUB_REPO`  | リポジトリ名 (owner/repo の repo 部分) | `"rig-utils"` |
 | `_GITHUB_BRANCH`| ダウンロード対象ブランチ (通常 `"main"`) | `"main"` |
-| `_MODULE`       | ツール本体 `.py` のモジュール名 (`.py` 抜き) | `"paint_projectile"` |
-| `_SHELF_BUTTON_LABEL` | シェルフに表示する短い名前 (10 文字以下推奨) | `"PaintFX"` |
+| `_MODULE`       | ツール本体 `.py` のモジュール名 (`.py` 抜き) | `"rig_utils"` |
+| `_SHELF_BUTTON_LABEL` | シェルフに表示する短い名前 (10 文字以下推奨) | `"RigUtils"` |
 
-### 6-2. `my_tool.py` (4 定数)
+### 6-2. `my_tool.py` (4 定数 + WINDOW)
 
 ```python
 WINDOW = "myToolWin"      # match install.py's _close_existing_window() target
@@ -527,13 +1020,13 @@ install.py の  _MODULE   :  <MODULE_NAME>
 my_tool.py の  _PACKAGE  :  <MODULE_NAME>
 ```
 
-例: 新ツール名を `paint_projectile` にする場合:
+例: 新ツール名を `rig_utils` にする場合:
 
 ```
-paint_projectile.py                ← ファイル自体を this にリネーム
-install.py:      _MODULE  = "paint_projectile"
-paint_projectile.py: _PACKAGE = "paint_projectile"
-paint_projectile.py: WINDOW   = "paint_projectileWin"   ← _MODULE + "Win"
+rig_utils.py                       ← ファイル自体を this にリネーム
+install.py:  _MODULE  = "rig_utils"
+rig_utils.py: _PACKAGE = "rig_utils"
+rig_utils.py: WINDOW   = "rig_utilsWin"   ← _MODULE + "Win"
 ```
 
 これ以外 (`_GITHUB_OWNER`, `_GITHUB_REPO`, `_SHELF_BUTTON_LABEL`, `WINDOW`) は
@@ -558,7 +1051,7 @@ update 関連の関数 (`_resolve_latest_sha`, `update_from_github`, `_run_updat
 `my_tool.py` が肥大化してきたら追加ファイルに分割することになる。
 その場合の作業:
 
-1. `my_tool/` フォルダ を作って `__init__.py` + サブモジュール群にリファクタ
+1. `my_tool/` フォルダを作って `__init__.py` + サブモジュール群にリファクタ
    (single-file → package 化)
 2. `install.py` の `_fetch_module` を「単一ファイルダウンロード」から
    「ファイル一覧ダウンロード」に拡張 → `_REMOTE_FILES` タプルを追加
@@ -566,47 +1059,65 @@ update 関連の関数 (`_resolve_latest_sha`, `update_from_github`, `_run_updat
    踏んだ落とし穴の再発防止)
 4. `_flush_imports` をパッケージ全体をポップするパターンに変更
 
-**参照元リポジトリ** (`ogshaw03/Stylized-Paint-Projectile-Tool`) の
-`paint_projectile/` パッケージ + そのルート `install.py` が拡張後の実装例
-そのもの。以下 URL を WebFetch して参考にする:
+拡張後の実装イメージ (パッケージ + 複数モジュール):
 
-- `https://raw.githubusercontent.com/ogshaw03/Stylized-Paint-Projectile-Tool/main/install.py`
-- `https://raw.githubusercontent.com/ogshaw03/Stylized-Paint-Projectile-Tool/main/paint_projectile/__init__.py`
-- `https://raw.githubusercontent.com/ogshaw03/Stylized-Paint-Projectile-Tool/main/paint_projectile/ui.py`
+```python
+# install.py の変更点だけ抜粋
+_REMOTE_FILES = (
+    f"{_PACKAGE}/__init__.py",
+    f"{_PACKAGE}/ui.py",
+    f"{_PACKAGE}/core.py",
+    # 新規モジュール追加時はここに追記
+)
+
+def _fetch_module(dest_root):
+    sha = _resolve_latest_sha()
+    for rel in _REMOTE_FILES:
+        url = f"{_GITHUB_RAW_BASE}/{sha}/{rel}"
+        target = os.path.join(dest_root, rel.replace("/", os.sep))
+        # ... _atomic_write_bytes(target, urllib.request.urlopen(url).read())
+
+def _flush_imports():
+    for name in list(sys.modules):
+        if name == _PACKAGE or name.startswith(_PACKAGE + "."):
+            sys.modules.pop(name, None)
+```
 
 ---
 
-## 7. 新ツール セッションでの Claude へのプロンプト テンプレ
+## 7. Claude / LLM への依頼プロンプト テンプレ
 
-新ツール開発を Claude に頼む時のプロンプト:
+新ツール開発を Claude (もしくは他の LLM) に頼む時のプロンプト:
 
 ```
 新しい Maya ツール "<ツール名>" を作りたい。
-配布とアップデートは別リポジトリ (paint_projectile) の参考実装パターンで
-組み込んで。以下 3 ファイルを WebFetch で取得して読み込んで:
+配布とアップデートは以下の doc に記載されている「単一 .md 完結」テンプレを
+使って:
 
-  https://raw.githubusercontent.com/ogshaw03/Stylized-Paint-Projectile-Tool/main/docs/maya-hot-update-patterns.md
-  https://raw.githubusercontent.com/ogshaw03/Stylized-Paint-Projectile-Tool/main/docs/reference-code/install.py
-  https://raw.githubusercontent.com/ogshaw03/Stylized-Paint-Projectile-Tool/main/docs/reference-code/my_tool.py
+  (この maya-hot-update-patterns.md ファイル全体をここに貼り付け)
 
-参照元リポジトリ (paint_projectile) の中身は真似しない。
-上の 2 つの .py の中身を こちら (新ツール リポジトリ) の
-ルート に書き出し、CUSTOMIZE ブロック (patterns doc §6) を以下で埋めて:
+指示:
 
-  GitHub owner: <あなたの GitHub アカウント>
-  リポジトリ名: <新リポジトリ名>
-  モジュール名: <スネークケース、ファイル名にもする>
-  シェルフボタン ラベル: <10 文字以下>
+1. §5-A の install.py の全文と §5-B の my_tool.py の全文をコピーし、
+   新ツール リポジトリのルートに 2 ファイルとして書き出す。
+   ファイル名は my_tool.py → <ツール名>.py にリネーム (§6-3 の規則)。
 
-そのあと <ツール名>.py の _build_body() に、以下の機能を実装:
+2. §6 の CUSTOMIZE ブロック 2 箇所を以下で埋める:
+     GitHub owner: <あなたの GitHub アカウント>
+     リポジトリ名: <新リポジトリ名>
+     モジュール名: <スネークケース、ファイル名にもする>
+     シェルフボタン ラベル: <10 文字以下>
 
-  ・<機能 1>
-  ・<機能 2>
-  ...
+3. <ツール名>.py の _build_body() に、以下の機能を実装:
+     ・<機能 1>
+     ・<機能 2>
+     ...
 
-配布インフラは変えず (patterns doc §1-10 に登録忘れ注意)、
-ツール中身だけを追加してください。
+4. 配布インフラ (update 関連関数、shelf button 部分) には手を加えない。
+   §1-1 〜 §1-10 で解説されている失敗パターンを踏まないよう注意。
+
+5. GitHub に push 後、install.py の raw URL をエンドユーザーに配布。
 ```
 
-Claude が参考ファイルを読み込んで、CUSTOMIZE ブロックを埋め、
-機能実装まで一気にできる。
+この doc 1 つを渡すだけで、Claude が §5-A / §5-B のコードを丸ごとコピー
+→ §6 の書き換え → §7 の機能実装、を一気通貫でこなせる。
