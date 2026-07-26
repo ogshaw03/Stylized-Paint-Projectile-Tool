@@ -110,17 +110,25 @@ def _on_generate(fields):
 
 
 def _update_from_github(*_args) -> None:
-    """Fetch install.py from GitHub and run it inline. This bypasses the
-    drag-and-drop-caching issue where Maya won't re-run install.py in
-    the same session."""
+    """User-facing Update handler. Immediately returns so Maya can finish
+    the button callback and tear down / re-render UI cleanly, then
+    performs the actual fetch-install-reopen sequence via
+    ``evalDeferred``.
+
+    Doing the work inline caused Maya to leave the tool window in a
+    zombie state: the callback deleted the very window that owned the
+    button, install()'s confirmDialog then ran while the parent was
+    mid-teardown, and the follow-up ``show()`` occasionally silently
+    no-op'd or produced a hidden window."""
+    cmds.evalDeferred(_run_update, lowestPriority=True)
+
+
+def _run_update() -> None:
+    """Deferred: fetch install.py, run it, then queue up the reopen."""
     import sys
     import traceback
     import urllib.request
 
-    # raw.githubusercontent.com's CDN keys its cache on the path only —
-    # ?_=<salt> does NOT bust it. Resolve the current commit SHA via
-    # the GitHub API and hit the SHA-scoped raw URL, which is immutable
-    # per SHA and therefore never cache-stale for a new commit.
     sha = _resolve_latest_sha_ui()
     url = f"{_GITHUB_RAW_BASE}/{sha}/install.py"
     print(f"[paint_projectile] update: fetching {url}")
@@ -131,12 +139,22 @@ def _update_from_github(*_args) -> None:
         })
         source = urllib.request.urlopen(req, timeout=30).read()
     except Exception as exc:
+        traceback.print_exc()
         cmds.confirmDialog(
             title="Update failed",
             message=f"Could not fetch install.py:\n{exc}",
             button=["OK"],
         )
         return
+
+    # Close ourselves cleanly BEFORE running install.py. install() also
+    # tries to close us, but doing it here first means the exec'd
+    # install.py never sees a window mid-teardown.
+    if cmds.window(WINDOW, exists=True):
+        try:
+            cmds.deleteUI(WINDOW)
+        except Exception:
+            pass
 
     ns = {"__name__": "install", "__file__": "<github>"}
     try:
@@ -154,17 +172,23 @@ def _update_from_github(*_args) -> None:
         )
         return
 
-    # Force-drop the running package so the very next import reads the
-    # freshly overwritten files from disk. install() already does this
-    # once, but a defensive second pass is cheap and makes the reopen
-    # deterministic if the module was somehow re-imported in between.
-    if cmds.window(WINDOW, exists=True):
-        cmds.deleteUI(WINDOW)
+    # Drop the running package so the very next import reads the freshly
+    # overwritten files. install() already does this once; a second pass
+    # is cheap and defensive.
     for _m in [k for k in list(sys.modules)
                if k == "paint_projectile" or k.startswith("paint_projectile.")
                or k == "paint_projectile_launch"]:
         sys.modules.pop(_m, None)
 
+    # Queue the reopen on the *next* idle so install()'s confirmDialog
+    # has fully dismissed and Maya's UI thread is settled. Calling
+    # show() inline right after the modal returned sometimes produced
+    # a window that never became visible.
+    cmds.evalDeferred(_reopen_after_update, lowestPriority=True)
+
+
+def _reopen_after_update() -> None:
+    import traceback
     try:
         import paint_projectile_launch
         paint_projectile_launch.show()
